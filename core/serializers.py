@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
+from core.models import GHLAuthCredentials
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -38,5 +39,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 
+class GHLAuthCredentialsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GHLAuthCredentials
+        exclude = ["access_token", "refresh_token", "expires_in"]
 
 

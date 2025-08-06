@@ -10,13 +10,17 @@ from core.services import get_location_name
 from urllib.parse import urlencode
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated,IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from .serializers import UserSerializer, RegisterSerializer
+from rest_framework import generics
+from .models import GHLAuthCredentials
+from .serializers import GHLAuthCredentialsSerializer
+
 
 
 # Create your views here.
@@ -109,24 +113,7 @@ def tokens(request):
 
 
 
-# class RegisterView(APIView):
-#     """
-#     Register a new user
-#     """
-#     permission_classes = [AllowAny]
-    
-#     def post(self, request):
-#         serializer = RegisterSerializer(data=request.data)
-#         if serializer.is_valid():
-#             user = serializer.save()
-#             refresh = RefreshToken.for_user(user)
-#             return Response({
-#                 'user': UserSerializer(user).data,
-#                 'refresh': str(refresh),
-#                 'access': str(refresh.access_token),
-#                 'message': 'User registered successfully'
-#             }, status=status.HTTP_201_CREATED)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class LogoutView(APIView):
@@ -149,28 +136,38 @@ class LogoutView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class UserView(APIView):
-#     """
-#     Get current user details
-#     """
-#     permission_classes = [IsAuthenticated]
-    
-#     def get(self, request):
-#         serializer = UserSerializer(request.user)
-#         return Response(serializer.data)
-    
-#     def put(self, request):
-#         serializer = UserSerializer(request.user, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# import math
-# text = TextMessage.objects.get(message_id='jWtWLCzqunerFNIwr7eK')
-# print("conversation_id:    ",text.conversation.conversation_id)
-# print("text: ", len(text.body))
+class GHLAuthCredentialsListView(generics.ListAPIView):
+    """
+    GET /api/ghl-auth-credentials/ → List all GHL credentials
+    """
+    queryset = GHLAuthCredentials.objects.all()
+    serializer_class = GHLAuthCredentialsSerializer
+    permission_classes = [IsAdminUser]
 
-# print("segmants:    ",math.ceil(len(text.body) / 160))
-# print(text.conversation.contact.phone)
+
+class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /api/ghl-auth-credentials/<int:pk>/ → Retrieve one
+    PUT    /api/ghl-auth-credentials/<int:pk>/ → Update
+    DELETE /api/ghl-auth-credentials/<int:pk>/ → Delete
+    """
+    queryset = GHLAuthCredentials.objects.all()
+    serializer_class = GHLAuthCredentialsSerializer
+    permission_classes = [IsAdminUser]
+
+@csrf_exempt
+def webhook_handler(request):
+    if request.method != "POST":
+        return JsonResponse({"message": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        print("date:----- ", data)
+        # WebhookLog.objects.create(data=data)
+        # event_type = data.get("type")
+        # handle_webhook_event.delay(data, event_type)
+        return JsonResponse({"message":"Webhook received"}, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
