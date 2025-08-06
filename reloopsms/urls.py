@@ -20,5 +20,6 @@ from django.urls import path, include
 urlpatterns = [
     path('api/admin/', admin.site.urls),
     path('api/core/', include("core.urls")),
+    path('api/sms/', include("sms_management_app.urls")),
     path('api/transmit-sms/', include("transmitsms.urls")),
 ]

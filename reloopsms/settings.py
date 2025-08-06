@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'corsheaders',
 
     'core',
+    'sms_management_app',
     'transmitsms'
 ]
 
@@ -170,6 +171,25 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60.0,
     },
 }
+
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20
+}
+
 
 
 SIMPLE_JWT = {

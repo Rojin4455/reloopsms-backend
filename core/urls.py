@@ -18,6 +18,7 @@ urlpatterns = [
     
     # Custom endpoints
     path('logout/', LogoutView.as_view(), name='logout'),
-    # path('user/', UserView.as_view(), name='user'),
-    # path('register/', RegisterView.as_view(), name='register'),
+    path('ghl-auth-credentials/', GHLAuthCredentialsListView.as_view(), name='ghl-auth-credentials-list'),
+    path('ghl-auth-credentials/<int:pk>/', GHLAuthCredentialsDetailView.as_view(), name='ghl-auth-credentials-detail'),
+    path('test-provider', webhook_handler, name='test-provider'),
 ]
