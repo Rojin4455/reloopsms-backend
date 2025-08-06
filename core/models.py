@@ -10,6 +10,8 @@ class GHLAuthCredentials(models.Model):
     scope = models.CharField(max_length=500, null=True, blank=True)
     user_type = models.CharField(max_length=50, null=True, blank=True)
     company_id = models.CharField(max_length=255, null=True, blank=True)
+    location_name = models.CharField(max_length=255, null=True, blank=True)
+    timezone = models.CharField(max_length=100, null=True, blank=True, default="")
     location_id = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
