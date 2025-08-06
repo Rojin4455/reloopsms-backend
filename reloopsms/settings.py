@@ -61,9 +61,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django_celery_beat',
+    'corsheaders',
 
     'core',
     'sms_management_app',
+    'transmitsms'
 ]
 
 MIDDLEWARE = [
