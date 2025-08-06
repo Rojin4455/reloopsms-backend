@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     'django_celery_beat',
 
     'core',
+    'transmitsms'
 ]
 
 MIDDLEWARE = [
