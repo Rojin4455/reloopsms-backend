@@ -6,6 +6,7 @@ from django.db import models
 
 class TransmitSMSAccount(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account_name = models.CharField(max_length=150)
     api_key = models.CharField(max_length=255)
     api_secret = models.CharField(max_length=255)
     account_id = models.CharField(max_length=100, unique=True)
