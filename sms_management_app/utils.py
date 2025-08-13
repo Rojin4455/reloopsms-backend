@@ -28,7 +28,46 @@ def validate_phone_number(phone):
     pattern = r'^\+[1-9]\d{1,14}'
     return bool(re.match(pattern, phone))
 
+
+
 def get_callback_url(endpoint):
     """Generate full callback URL"""
     base_url = settings.BASE_URL.rstrip('/')
     return f"{base_url}/api/{endpoint.lstrip('/')}"
+
+import re
+
+def format_password(location_name: str) -> str:
+    # Remove leading/trailing spaces and collapse multiple spaces
+    cleaned = re.sub(r'\s+', ' ', location_name.strip())
+    
+    # Capitalize first letter of each word to ensure at least 1 uppercase
+    cleaned = cleaned.title()
+    
+    # Append @123 (already has special char, digits, and min length)
+    password = f"{cleaned}@123"
+    
+    return password
+
+
+def format_international(number, default_country_code="61"):
+    """
+    Format a phone number into international format:
+    - Removes leading '+' if present
+    - Removes leading zero for local numbers
+    - Prepends default country code if missing
+    """
+    number = str(number).strip()
+
+    # Already has country code
+    if number.startswith("+"):
+        return number[1:]  # remove '+' to match your API format
+
+    # Remove all non-digit characters
+    number = ''.join(filter(str.isdigit, number))
+
+    # If number length is 9 or 10, assume local and add country code
+    if len(number) <= 10:
+        number = f"{default_country_code}{number.lstrip('0')}"
+
+    return number

@@ -9,6 +9,7 @@ class TransmitSMSAccount(models.Model):
     account_name = models.CharField(max_length=150)
     email = models.EmailField(null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)  # MSISDN format
+    password = models.CharField(max_length=100, null=True, blank=True)
     api_key = models.CharField(max_length=255)
     api_secret = models.CharField(max_length=255)
     account_id = models.CharField(max_length=100, unique=True)

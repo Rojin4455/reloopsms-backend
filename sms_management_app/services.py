@@ -5,6 +5,7 @@ from django.conf import settings
 from django.utils import timezone
 from .models import TransmitSMSAccount, GHLTransmitSMSMapping, SMSMessage, WebhookLog
 from core.models import GHLAuthCredentials
+from sms_management_app.utils import format_international
 
 class TransmitSMSService:
     def __init__(self):
@@ -101,9 +102,12 @@ class TransmitSMSService:
             transmit_account.api_secret
         )
 
+        to_number = format_international(to_number)
+        from_number = format_international(from_number)
+
         data = {
             'message': message,
-            'to': to_number[1:],
+            'to': to_number,
             # 'from': from_number,
         }
 
@@ -175,6 +179,7 @@ class GHLIntegrationService:
                 defaults={
                     'account_name': existing_account['name'],
                     'email': existing_account['email'],
+                    'password': account_details['password'],
                     'phone_number': str(existing_account['msisdn']),
                     'api_key': existing_account['apikey'],
                     'api_secret': existing_account['apisecret'],
@@ -202,6 +207,7 @@ class GHLIntegrationService:
                 api_secret=account_data['apisecret'],
                 account_id=str(account_data['id']),
                 balance=account_data.get('balance', 0),
+                password=account_details['password'],
                 currency=account_data.get('currency', 'AUD'),
                 timezone=account_data.get('timezone', 'Australia/Brisbane'),
             )
@@ -314,17 +320,30 @@ def update_ghl_message_status(message_id, status, ghl_token):
     
     Args:
         message_id (str): GHL message ID to update
-        status (str): New status value (e.g., 'delivered', 'read')
+        status (str): New status value
         ghl_token (str): Bearer token for GHL API
+    
+    Common valid statuses (based on typical messaging APIs):
+    - 'delivered'
+    - 'read' 
+    - 'sent'
+    - 'pending'
+    - 'undelivered'
+    
+    Note: 'failed' may not be a valid status for GHL API
     """
     url = f"https://services.leadconnectorhq.com/conversations/messages/{message_id}/status"
     
     headers = {
         "Accept": "application/json",
         "Authorization": f"Bearer {ghl_token}",
-        "Content-Type": "application/json",
+        # "Content-Type": "application/json",
         "Version": "2021-04-15"
     }
+
+    print(f"[DEBUG] Status being sent: '{status}'")
+    if status == "failed":
+        status = "pending"
     
     payload = {
         "status": status
@@ -332,11 +351,34 @@ def update_ghl_message_status(message_id, status, ghl_token):
     
     try:
         print(f"[GHL API] Updating message {message_id} to status '{status}'...")
-        response = requests.put(url, headers=headers, json=payload)
+        print(f"[DEBUG] Request URL: {url}")
+        print(f"[DEBUG] Request payload: {json.dumps(payload, indent=2)}")
+        
+        response = requests.put(url, headers=headers, data=payload)
+        
+        # Enhanced error handling
+        if response.status_code == 422:
+            print(f"[ERROR] 422 Unprocessable Entity - Invalid status value: '{status}'")
+            print(f"[ERROR] Response body: {response.text}")
+            print("[SUGGESTION] Try using one of these common statuses: 'delivered', 'read', 'sent', 'pending', 'undelivered'")
+            return {
+                "success": False, 
+                "error": f"Invalid status '{status}'. Status may not be supported by GHL API.",
+                "status_code": 422,
+                "response_body": response.text
+            }
+        
         response.raise_for_status()
         print("[GHL API] Update successful:", response.json())
         return {"success": True, "data": response.json()}
     
     except requests.exceptions.RequestException as e:
-        print("[GHL API] Update failed:", str(e))
-        return {"success": False, "error": str(e)}
+        print(f"[GHL API] Update failed: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[ERROR] Status Code: {e.response.status_code}")
+            print(f"[ERROR] Response Body: {e.response.text}")
+        return {
+            "success": False, 
+            "error": str(e),
+            "status_code": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+        }
