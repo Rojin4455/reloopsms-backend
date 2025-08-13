@@ -52,6 +52,18 @@ def callback(request):
     return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?code={code}')
 
 
+
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.utils.decorators import method_decorator
+from django.views import View
+import json
+from sms_management_app.services import GHLIntegrationService, TransmitSMSService
+from core.models import GHLAuthCredentials
+from django.utils import timezone
+
 def tokens(request):
     authorization_code = request.GET.get("code")
 
@@ -81,9 +93,8 @@ def tokens(request):
             }, status=400)
         
 
-        location_name, timezone = get_location_name(location_id=response_data.get("locationId"), access_token=response_data.get('access_token'))
-        
-
+        data = get_location_name(location_id=response_data.get("locationId"), access_token=response_data.get('access_token'))
+        location_data = data.get("location")
         obj, created = GHLAuthCredentials.objects.update_or_create(
             location_id= response_data.get("locationId"),
             defaults={
@@ -94,10 +105,23 @@ def tokens(request):
                 "user_type": response_data.get("userType"),
                 "company_id": response_data.get("companyId"),
                 "user_id":response_data.get("userId"),
-                "location_name":location_name,
-                "timezone": timezone
+                "location_name":location_data.get("name"),
+                "timezone": location_data.get("timezone"),
+                "business_email":location_data.get("email"),
+                "business_phone":location_data.get("phone")
             }
         )
+
+        account_details = {
+            'name': obj.location_name,
+            'email': obj.business_email,
+            'phone': obj.business_phone,
+            'password': f"{obj.location_name}@123"
+        }
+        
+        # # Setup TransmitSMS account
+        service = GHLIntegrationService()
+        mapping = service.setup_transmit_account_for_ghl(obj, account_details)
         query_params = urlencode({
             "locationId":response_data.get("locationId"),
         })
@@ -112,6 +136,42 @@ def tokens(request):
     
 
 
+
+@method_decorator(csrf_exempt, name='dispatch')
+class SetupTransmitAccountView(View):
+    """Setup TransmitSMS account for GHL location"""
+    
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+            location_id = data.get('location_id')
+            account_details = {
+                'name': data.get('account_name'),
+                'email': data.get('email'),
+                'phone': data.get('phone'),
+                'password': data.get('password', 'default_password_123')
+            }
+            
+            # Get GHL account
+            try:
+                ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+            except GHLAuthCredentials.DoesNotExist:
+                return JsonResponse({
+                    "error": "GHL account not found"
+                }, status=404)
+            
+            # Setup TransmitSMS account
+            service = GHLIntegrationService()
+            mapping = service.setup_transmit_account_for_ghl(ghl_account, account_details)
+            
+            return JsonResponse({
+                "message": "TransmitSMS account setup successfully",
+                "mapping_id": str(mapping.id),
+                "transmit_account_id": mapping.transmit_account.account_id
+            }, status=200)
+            
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
 
 
 

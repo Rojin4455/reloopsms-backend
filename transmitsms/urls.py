@@ -8,4 +8,7 @@ router.register(r'accounts', TransmitSMSAccountViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('drl-callback/', drl_callback_view),
 ]
+
+
