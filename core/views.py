@@ -63,6 +63,7 @@ import json
 from sms_management_app.services import GHLIntegrationService, TransmitSMSService
 from core.models import GHLAuthCredentials
 from django.utils import timezone
+from sms_management_app.utils import format_password
 
 def tokens(request):
     authorization_code = request.GET.get("code")
@@ -111,12 +112,13 @@ def tokens(request):
                 "business_phone":location_data.get("phone")
             }
         )
+        password = format_password(obj.location_name)
 
         account_details = {
             'name': obj.location_name,
             'email': obj.business_email,
             'phone': obj.business_phone,
-            'password': f"{obj.location_name}@123"
+            'password': password
         }
         
         # # Setup TransmitSMS account

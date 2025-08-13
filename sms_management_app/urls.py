@@ -12,7 +12,7 @@ urlpatterns = [
 
     path('ghl-conversation-webhook/', ghl_webhook_handler, name='ghl_webhook'),
     
-    # TransmitSMS callbacks  
+    # TransmitSMS callbacks
     path('transmit-sms/dlr-callback/', transmit_dlr_callback, name='transmit_dlr_callback'),
     path('transmit-sms/reply-callback/', transmit_reply_callback, name='transmit_reply_callback'),
     

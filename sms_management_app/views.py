@@ -9,6 +9,7 @@ from .models import GHLTransmitSMSMapping
 from core.models import GHLAuthCredentials
 from transmitsms.models import TransmitSMSAccount
 from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer
+from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 
 
 # Create your views here.
@@ -176,11 +177,12 @@ def transmit_dlr_callback(request):
 
 
             
-            update_ghl_message_status(
-                message_id=sms_message.ghl_message_id,  # from TransmitSMS response
-                status=sms_message.status,
-                ghl_token=sms_message.ghl_account.access_token
-            )
+            update_ghl_message_status_task.delay(
+                    message_id=sms_message.ghl_message_id,
+                    status=sms_message.status,
+                    ghl_token=sms_message.ghl_account.access_token,
+                    sms_message_id=sms_message.id
+                )
             
             
         except SMSMessage.DoesNotExist:
