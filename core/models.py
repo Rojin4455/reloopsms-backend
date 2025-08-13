@@ -1,9 +1,11 @@
 from django.db import models
+import uuid
 
 # Create your models here.
 
 class GHLAuthCredentials(models.Model):
     user_id = models.CharField(max_length=255, unique=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     access_token = models.TextField()
     refresh_token = models.TextField()
     expires_in = models.IntegerField()

@@ -102,7 +102,7 @@ def tokens(request):
             "locationId":response_data.get("locationId"),
         })
 
-        frontend_url = f"{FRONTEND_URL}/admin/dashboard?{query_params}"
+        frontend_url = f"{FRONTEND_URL}/highlevel-accounts?{query_params}"
         
         return redirect(frontend_url)
         
