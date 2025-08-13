@@ -8,9 +8,8 @@ from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
 from core.models import GHLAuthCredentials
 from transmitsms.models import TransmitSMSAccount
-from .serializers import GHLTransmitSMSMappingSerializer
+from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
-
 
 
 # Create your views here.
@@ -298,3 +297,7 @@ class SetupTransmitAccountView(View):
             
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
+
+class SMSMessageListView(generics.ListAPIView):
+    queryset = SMSMessage.objects.all().order_by('-created_at')  # latest first
+    serializer_class = SMSMessageSerializer

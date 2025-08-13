@@ -18,4 +18,6 @@ urlpatterns = [
     
     # Account setup
     path('setup-transmit-account/', SetupTransmitAccountView.as_view(), name='setup_transmit_account'),
+    #messages list
+    path('sms-messages/', SMSMessageListView.as_view(), name='sms-message-list'),
 ]
