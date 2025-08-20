@@ -196,6 +196,11 @@ def transmit_dlr_callback(request):
 
 
 
+import requests
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+from .models import WebhookLog, GHLTransmitSMSMapping, SMSMessage, TransmitSMSAccount
+
 @csrf_exempt
 def transmit_reply_callback(request):
     """Handle incoming SMS replies from TransmitSMS (GET webhook)"""
@@ -207,66 +212,90 @@ def transmit_reply_callback(request):
         data = request.GET.dict()
         print("📩 Reply webhook received:", data)
 
-        # Log raw webhook
+        # Always log raw webhook
         WebhookLog.objects.create(
-            webhook_type='transmit_reply',
+            webhook_type="transmit_reply",
             raw_data=data
         )
 
-        # Map TransmitSMS params
-        from_number = data.get("mobile")       # customer’s number
-        to_number = data.get("longcode")       # our number
-        message_content = data.get("response") # reply text
+        # Extract params from Transmit webhook
+        from_number = data.get("mobile")          # user’s phone
+        to_number = data.get("longcode")          # our transmit number
+        message_content = data.get("response")    # the reply text
+        message_id = data.get("message_id")
 
         if not (from_number and to_number and message_content):
             return JsonResponse({"error": "Missing required parameters"}, status=400)
 
+        # 🔹 Step 1: Find mapping (Transmit account → GHL account)
         try:
-            # Find mapping via the "to_number"
             transmit_account = TransmitSMSAccount.objects.get(phone_number=to_number)
             mapping = GHLTransmitSMSMapping.objects.get(transmit_account=transmit_account)
             ghl_account = mapping.ghl_account
-
-            # Save inbound SMS
-            sms = SMSMessage.objects.create(
-                ghl_account=ghl_account,
-                transmit_account=transmit_account,
-                message_content=message_content,
-                to_number=to_number,
-                from_number=from_number,
-                direction="inbound",
-                status="delivered"
-            )
-
-            print(f"✅ SMSMessage saved: {sms.id}")
-
-            # === Forward to GHL Conversation ===
-            ghl_token = ghl_account.api_key  # Adjust if stored differently
-            conversation_url = "https://rest.gohighlevel.com/v1/conversations/messages"
-
-            payload = {
-                "contactId": find_or_create_contact_in_ghl(ghl_token, from_number),
-                "message": message_content,
-                "type": "SMS"
-            }
-            headers = {
-                "Authorization": f"Bearer {ghl_token}",
-                "Content-Type": "application/json"
-            }
-
-            r = requests.post(conversation_url, json=payload, headers=headers)
-            print(f"➡️ Forwarding to GHL: {payload}")
-            print(f"⬅️ GHL Response [{r.status_code}]: {r.text}")
-            r.raise_for_status()
-
         except (TransmitSMSAccount.DoesNotExist, GHLTransmitSMSMapping.DoesNotExist):
             return JsonResponse({"error": f"No mapping found for number {to_number}"}, status=404)
 
-        return JsonResponse({"message": "Reply processed and forwarded"}, status=200)
+        ghl_token = ghl_account.access_token
+        ghl_location_id = ghl_account.location_id
+
+        # 🔹 Step 2: Find or create contact in GHL
+        contact_id = None
+        contact_url = f"https://rest.gohighlevel.com/v1/contacts/"
+        headers = {"Authorization": f"Bearer {ghl_token}", "Content-Type": "application/json"}
+
+        # Search for contact by phone
+        search_resp = requests.get(
+            f"{contact_url}?locationId={ghl_location_id}&query={from_number}",
+            headers=headers
+        )
+        if search_resp.status_code == 200 and search_resp.json().get("contacts"):
+            contact_id = search_resp.json()["contacts"][0]["id"]
+        else:
+            # Create if not found
+            create_resp = requests.post(
+                contact_url,
+                headers=headers,
+                json={
+                    "locationId": ghl_location_id,
+                    "phone": from_number,
+                    "name": from_number  # fallback
+                }
+            )
+            create_resp.raise_for_status()
+            contact_id = create_resp.json()["contact"]["id"]
+
+        # 🔹 Step 3: Create message in GHL conversation
+        conv_url = "https://rest.gohighlevel.com/v1/conversations/messages"
+        payload = {
+            "contactId": contact_id,
+            "message": message_content,
+            "type": "SMS"
+        }
+        conv_resp = requests.post(conv_url, headers=headers, json=payload)
+        conv_resp.raise_for_status()
+        ghl_message = conv_resp.json()["message"]
+
+        # 🔹 Step 4: Save in DB
+        sms = SMSMessage.objects.create(
+            ghl_account=ghl_account,
+            transmit_account=transmit_account,
+            message_content=message_content,
+            to_number=to_number,
+            from_number=from_number,
+            direction="inbound",
+            status="delivered",
+            ghl_message_id=ghl_message.get("id"),
+            ghl_conversation_id=ghl_message.get("conversationId"),
+            ghl_contact_id=contact_id,
+            transmit_message_id=message_id
+        )
+
+        return JsonResponse({"message": "Reply processed", "ghl_message_id": sms.ghl_message_id}, status=200)
 
     except Exception as e:
-        print("❌ Error in transmit_reply_callback:", str(e))
+        print("❌ Error processing reply:", str(e))
         return JsonResponse({"error": str(e)}, status=500)
+
     
 
 @method_decorator(csrf_exempt, name='dispatch')

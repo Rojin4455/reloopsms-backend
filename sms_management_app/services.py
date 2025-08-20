@@ -260,7 +260,7 @@ class GHLIntegrationService:
 
             # Prepare callback URLs
             dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
-            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/"
+            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
             print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
 
             # Create SMS message record
