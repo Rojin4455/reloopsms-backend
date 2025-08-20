@@ -121,6 +121,8 @@ def tokens(request):
             'phone': obj.business_phone,
             'password': password
         }
+
+        print("changes updates")
         
         # # Setup TransmitSMS account
         service = GHLIntegrationService()
