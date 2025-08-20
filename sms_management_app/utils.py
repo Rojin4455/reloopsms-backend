@@ -45,7 +45,7 @@ def format_password(location_name: str) -> str:
     cleaned = cleaned.title()
     
     # Append @123
-    password = f"{cleaned}@123"
+    password = f"{cleaned}@1234"
     
     return password
 
