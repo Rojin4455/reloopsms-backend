@@ -86,7 +86,7 @@ class TransmitSMSService:
         if not clients_data or 'clients' not in clients_data:
             return None
         
-        # print("client datasssL :", clients_data)
+        print("client datasssL :", clients_data)
         for client in clients_data['clients']:
             if email and client.get('email') == email:
                 return client
