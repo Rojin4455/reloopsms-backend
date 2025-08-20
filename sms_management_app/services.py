@@ -80,82 +80,92 @@ class TransmitSMSService:
             print(f"Error fetching clients: {e}")
             return None
 
-    def find_existing_account(self, email=None, phone=None):
+    def find_existing_account(self, email=None, phone=None, name=None):
         """Find existing TransmitSMS account by email or phone"""
         clients_data = self.get_existing_clients()
         if not clients_data or 'clients' not in clients_data:
             return None
-            
+        
+        # print("client datasssL :", clients_data)
         for client in clients_data['clients']:
             if email and client.get('email') == email:
                 return client
             if phone and str(client.get('msisdn')) == str(phone):
                 return client
+            if name and client.get('name') == name:
+                return client
         return None
-
     def send_sms(self, message, to_number, from_number, transmit_account, 
             dlr_callback=None, reply_callback=None, **kwargs):
-        """Send SMS via TransmitSMS API"""
+        """Send SMS via TransmitSMS API with fallback if caller ID is invalid."""
         url = f"{self.base_url}/send-sms.json"
         headers = self._get_auth_header(
-            transmit_account.api_key, 
+            transmit_account.api_key,
             transmit_account.api_secret
         )
 
+        # Format numbers
+        print("from number: before ", from_number)
+        print("to number: before; ", to_number)
         to_number = format_international(to_number)
         from_number = format_international(from_number)
+        print("from number: ", from_number)
+        print("to number: ", to_number)
 
+        def _make_request(payload):
+            """Helper to send POST request"""
+            try:
+                response = requests.post(url, data=payload, headers=headers)
+                print(f"➡️ Sending request with payload: {payload}")
+                print(f"⬅️ Response [{response.status_code}]: {response.text}")
+
+                response.raise_for_status()
+                result = response.json()
+                return {
+                    'success': True,
+                    'data': result,
+                    'message_id': result.get('message_id')
+                }
+            except requests.exceptions.RequestException as e:
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'response_text': getattr(e.response, "text", None)
+                }
+
+        # First attempt WITH from_number
         data = {
             'message': message,
             'to': to_number,
-            # 'from': from_number,
+            'from': from_number,
         }
-
-        # Add optional parameters
         if dlr_callback:
             data['dlr_callback'] = dlr_callback
         if reply_callback:
             data['reply_callback'] = reply_callback
-
-
-        print("send sms data: ", data)
-
-        # Add any additional parameters
         data.update(kwargs)
 
-        # Debug logging before request
-        # print("=== Sending SMS ===")
-        # print(f"URL: {url}")
-        # print(f"Headers: {headers}")
-        # print(f"Payload: {data}")
+        print("🚀 First attempt with from_number")
+        result = _make_request(data)
 
-        try:
-            response = requests.post(url, data=data, headers=headers)
-            
-            # Debug response
-            # print("=== SMS API Response ===")
-            # print(f"Status Code: {response.status_code}")
-            # print(f"Response Body: {response.text}")
-            
-            response.raise_for_status()
-            result = response.json()
+        # Retry without from_number if BAD_CALLER_ID error
+        if not result['success'] and result['response_text']:
+            try:
+                error_json = json.loads(result['response_text'])
+                if error_json.get("error", {}).get("code") == "BAD_CALLER_ID":
+                    print("⚠️ BAD_CALLER_ID detected. Retrying without 'from'...")
+                    data.pop('from', None)
+                    result = _make_request(data)
+            except Exception as parse_err:
+                print("❌ Failed to parse error JSON:", parse_err)
 
-            print("=== Parsed JSON Response ===")
-            print(result)
+        if result['success']:
+            print("✅ SMS sent successfully:", result)
+        else:
+            print("❌ SMS sending failed:", result)
 
-            return {
-                'success': True,
-                'data': result,
-                'message_id': result.get('message_id')
-            }
+        return result
 
-        except requests.exceptions.RequestException as e:
-            print("=== SMS Send Error ===")
-            print(str(e))
-            return {
-                'success': False,
-                'error': f"SMS send failed: {str(e)}"
-            }
 
 
 
@@ -169,7 +179,8 @@ class GHLIntegrationService:
         # First check if account already exists
         existing_account = self.transmit_service.find_existing_account(
             email=account_details.get('email'),
-            phone=account_details.get('phone')
+            phone=account_details.get('phone'),
+            name=account_details.get('name'),
         )
         
         if existing_account:

@@ -199,66 +199,73 @@ def transmit_dlr_callback(request):
 @csrf_exempt
 def transmit_reply_callback(request):
     """Handle incoming SMS replies from TransmitSMS (GET webhook)"""
-    
+
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
-        # Extract query params
+        data = request.GET.dict()
+        print("📩 Reply webhook received:", data)
 
-        print("reply data : ", request.GET.dict())
-        from_number = request.GET.get('from')
-        to_number = request.GET.get('to')
-        message_content = request.GET.get('message')
-        
-        # Log webhook for debugging
+        # Log raw webhook
         WebhookLog.objects.create(
             webhook_type='transmit_reply',
-            raw_data=request.GET.dict()
+            raw_data=data
         )
+
+        # Map TransmitSMS params
+        from_number = data.get("mobile")       # customer’s number
+        to_number = data.get("longcode")       # our number
+        message_content = data.get("response") # reply text
 
         if not (from_number and to_number and message_content):
             return JsonResponse({"error": "Missing required parameters"}, status=400)
 
         try:
-            # Find mapping
+            # Find mapping via the "to_number"
             transmit_account = TransmitSMSAccount.objects.get(phone_number=to_number)
             mapping = GHLTransmitSMSMapping.objects.get(transmit_account=transmit_account)
             ghl_account = mapping.ghl_account
 
-            # Save in DB
-            SMSMessage.objects.create(
+            # Save inbound SMS
+            sms = SMSMessage.objects.create(
                 ghl_account=ghl_account,
                 transmit_account=transmit_account,
                 message_content=message_content,
                 to_number=to_number,
                 from_number=from_number,
-                direction='inbound',
-                status='delivered'
+                direction="inbound",
+                status="delivered"
             )
 
-            # # Forward to GHL conversation
-            # ghl_token = ghl_account.api_key  # Assuming you store their GHL API key
-            # conversation_url = "https://rest.gohighlevel.com/v1/conversations/messages"
+            print(f"✅ SMSMessage saved: {sms.id}")
 
-            # payload = {
-            #     "contactId": find_or_create_contact_in_ghl(ghl_token, from_number),
-            #     "message": message_content,
-            #     "type": "SMS"
-            # }
-            # headers = {
-            #     "Authorization": f"Bearer {ghl_token}",
-            #     "Content-Type": "application/json"
-            # }
-            # r = requests.post(conversation_url, json=payload, headers=headers)
-            # r.raise_for_status()
+            # === Forward to GHL Conversation ===
+            ghl_token = ghl_account.api_key  # Adjust if stored differently
+            conversation_url = "https://rest.gohighlevel.com/v1/conversations/messages"
+
+            payload = {
+                "contactId": find_or_create_contact_in_ghl(ghl_token, from_number),
+                "message": message_content,
+                "type": "SMS"
+            }
+            headers = {
+                "Authorization": f"Bearer {ghl_token}",
+                "Content-Type": "application/json"
+            }
+
+            r = requests.post(conversation_url, json=payload, headers=headers)
+            print(f"➡️ Forwarding to GHL: {payload}")
+            print(f"⬅️ GHL Response [{r.status_code}]: {r.text}")
+            r.raise_for_status()
 
         except (TransmitSMSAccount.DoesNotExist, GHLTransmitSMSMapping.DoesNotExist):
             return JsonResponse({"error": f"No mapping found for number {to_number}"}, status=404)
 
-        return JsonResponse({"message": "Reply processed"}, status=200)
+        return JsonResponse({"message": "Reply processed and forwarded"}, status=200)
 
     except Exception as e:
+        print("❌ Error in transmit_reply_callback:", str(e))
         return JsonResponse({"error": str(e)}, status=500)
     
 

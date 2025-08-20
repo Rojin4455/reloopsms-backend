@@ -113,6 +113,7 @@ def tokens(request):
             }
         )
         password = format_password(obj.location_name)
+        print("password: ", password)
 
         account_details = {
             'name': obj.location_name,

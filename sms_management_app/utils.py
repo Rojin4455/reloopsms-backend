@@ -38,13 +38,13 @@ def get_callback_url(endpoint):
 import re
 
 def format_password(location_name: str) -> str:
-    # Remove leading/trailing spaces and collapse multiple spaces
-    cleaned = re.sub(r'\s+', ' ', location_name.strip())
+    # Remove leading/trailing spaces, collapse multiple spaces, then remove all spaces
+    cleaned = re.sub(r'\s+', '', location_name.strip())
     
-    # Capitalize first letter of each word to ensure at least 1 uppercase
+    # Capitalize first letter of each word (after removing spaces won't really matter much)
     cleaned = cleaned.title()
     
-    # Append @123 (already has special char, digits, and min length)
+    # Append @123
     password = f"{cleaned}@123"
     
     return password
