@@ -4,8 +4,10 @@ import json
 from django.conf import settings
 from django.utils import timezone
 from .models import TransmitSMSAccount, GHLTransmitSMSMapping, SMSMessage, WebhookLog
-from core.models import GHLAuthCredentials
+from core.models import GHLAuthCredentials, Wallet
 from sms_management_app.utils import format_international
+from django.core.exceptions import ValidationError
+
 
 class TransmitSMSService:
     def __init__(self):
@@ -249,21 +251,17 @@ class GHLIntegrationService:
             ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
             # print("✅ Found GHL account:", ghl_account)
 
+            wallet, _ = Wallet.objects.get_or_create(account=ghl_account)
+
             # Find TransmitSMS mapping
             try:
                 mapping = GHLTransmitSMSMapping.objects.get(ghl_account=ghl_account)
                 transmit_account = mapping.transmit_account
-                # print("✅ Found TransmitSMS mapping:", transmit_account)
             except GHLTransmitSMSMapping.DoesNotExist:
                 print("❌ No mapping found for location:", location_id)
                 raise Exception(f"No TransmitSMS account mapped for GHL location {location_id}")
 
-            # Prepare callback URLs
-            dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
-            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
-            print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
-
-            # Create SMS message record
+            # Create SMS message record first
             sms_message = SMSMessage.objects.create(
                 ghl_account=ghl_account,
                 transmit_account=transmit_account,
@@ -276,10 +274,32 @@ class GHLIntegrationService:
                 ghl_contact_id=contact_id,
                 status='pending'
             )
-            # print("📝 Created SMSMessage record:", sms_message.id)
+
+            # Charge wallet (for outbound SMS)
+            try:
+                cost, segments = wallet.charge_message("outbound", message_content, reference_id=sms_message.id)
+                sms_message.cost = cost
+                sms_message.segments = segments
+                sms_message.save(update_fields=["cost", "segments"])
+            except ValidationError as e:
+                sms_message.status = "queued"
+                sms_message.cost = 0
+                sms_message.segments = (len(message_content) // 160) + 1
+                sms_message.save(update_fields=["status", "cost", "segments"])
+
+                return {
+                    "success": False,
+                    "error": "Insufficient balance, message queued",
+                    "message_id": sms_message.id,
+                }
+
+            # Prepare callback URLs
+            dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
+            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
+            print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
 
             # Send SMS via TransmitSMS
-            # print("📤 Sending SMS via TransmitSMS...")
+            print("📤 Sending SMS via TransmitSMS...")
             result = self.transmit_service.send_sms(
                 message=message_content,
                 to_number=to_number,
@@ -303,6 +323,9 @@ class GHLIntegrationService:
                     'transmit_message_id': result.get('message_id')
                 }
             else:
+                # Refund cost if failed to send
+                wallet.refund(cost, reference_id=sms_message.id, description='Refund because of sms failed to send.')
+                
                 sms_message.status = 'failed'
                 sms_message.error_message = result['error']
                 sms_message.save()
@@ -320,7 +343,33 @@ class GHLIntegrationService:
                 'error': str(e)
             }
 
-        
+    def send_outbound_sms(self, sms_message, cost, segments):
+        """Actually send SMS via TransmitSMS for queued or new messages"""
+        try:
+            transmit_account = sms_message.transmit_account
+            dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
+            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{sms_message.ghl_message_id}/"
+
+            result = self.transmit_service.send_sms(
+                message=sms_message.message_content,
+                to_number=sms_message.to_number,
+                from_number=transmit_account.phone_number,
+                transmit_account=transmit_account,
+                dlr_callback=dlr_callback,
+                reply_callback=reply_callback,
+            )
+
+            if result["success"]:
+                return {
+                    "success": True,
+                    "transmit_message_id": result.get("message_id"),
+                    "cost": cost,
+                    "segments": segments,
+                }
+            else:
+                return {"success": False, "error": result["error"]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 

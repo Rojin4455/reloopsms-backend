@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
-from core.models import GHLAuthCredentials
+from core.models import GHLAuthCredentials, Wallet, WalletTransaction
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -37,11 +37,52 @@ class RegisterSerializer(serializers.ModelSerializer):
     
 
 
+class WalletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Wallet
+        fields = [
+            "id",
+            "balance",
+            "inbound_segment_charge",
+            "outbound_segment_charge",
+            "updated_at",
+        ]
+        read_only_fields = ["balance", "updated_at"]
 
 
 class GHLAuthCredentialsSerializer(serializers.ModelSerializer):
+    wallet = WalletSerializer()
     class Meta:
         model = GHLAuthCredentials
         exclude = ["access_token", "refresh_token", "expires_in"]
+    
+    def update(self, instance, validated_data):
+        wallet_data = validated_data.pop("wallet", None)
 
+        instance = super().update(instance, validated_data)
 
+        if wallet_data:
+            wallet, _ = Wallet.objects.get_or_create(account=instance)
+            for field, value in wallet_data.items():
+                setattr(wallet, field, value)
+            wallet.save()
+
+        return instance
+
+class WalletTransactionSerializer(serializers.ModelSerializer):
+    wallet = serializers.PrimaryKeyRelatedField(read_only=True)
+    account = serializers.CharField(source="wallet.account.user_id", read_only=True)
+
+    class Meta:
+        model = WalletTransaction
+        fields = [
+            "id",
+            "wallet",
+            "account",
+            "transaction_type",
+            "amount",
+            "balance_after",
+            "description",
+            "reference_id",
+            "created_at",
+        ]

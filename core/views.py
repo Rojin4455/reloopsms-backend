@@ -14,12 +14,14 @@ from rest_framework.permissions import AllowAny, IsAuthenticated,IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework import viewsets
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from .serializers import UserSerializer, RegisterSerializer
 from rest_framework import generics
-from .models import GHLAuthCredentials
-from .serializers import GHLAuthCredentialsSerializer
+from rest_framework.decorators import action
+from .models import GHLAuthCredentials, Wallet, WalletTransaction
+from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer
 
 
 
@@ -236,3 +238,22 @@ def webhook_handler(request):
         return JsonResponse({"message":"Webhook received"}, status=200)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+class WalletViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only Wallet API for admin"""
+    queryset = Wallet.objects.select_related("account")
+    serializer_class = WalletSerializer
+
+    @action(detail=True, methods=["get"])
+    def transactions(self, request, pk=None):
+        """Get all transactions for a given wallet"""
+        wallet = self.get_object()
+        transactions = WalletTransaction.objects.filter(wallet=wallet)
+        serializer = WalletTransactionSerializer(transactions, many=True)
+        return Response(serializer.data)
+
+
+class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
+    """List all transactions (with filtering support)"""
+    queryset = WalletTransaction.objects.select_related("wallet", "wallet__account")
+    serializer_class = WalletTransactionSerializer
