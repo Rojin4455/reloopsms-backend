@@ -29,6 +29,7 @@ class SMSMessage(models.Model):
         ('delivered', 'Delivered'),
         ('failed', 'Failed'),
         ('expired', 'Expired'),
+        ("queued", "Queued (no balance)"),
     ]
     
     DIRECTION_CHOICES = [
@@ -58,6 +59,9 @@ class SMSMessage(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     delivery_status = models.TextField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
+
+    cost = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    segments = models.PositiveIntegerField(default=1)
     
     # Timestamps
     sent_at = models.DateTimeField(null=True, blank=True)

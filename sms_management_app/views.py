@@ -6,11 +6,11 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
-from core.models import GHLAuthCredentials
+from core.models import GHLAuthCredentials, Wallet
 from transmitsms.models import TransmitSMSAccount
 from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
-
+from django.core.exceptions import ValidationError
 
 # Create your views here.
 @csrf_exempt
@@ -238,33 +238,8 @@ def transmit_reply_callback(request, message_id):
 
         if not conversation_id or not conversation_provider_id:
             return JsonResponse({"error": "Missing GHL IDs"}, status=400)
-
-        # 3. Build payload for inbound message to GHL
-        ghl_api_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
-
-        payload = {
-            "type": "SMS",
-            "message": data.get("response"),
-            "conversationId": conversation_id,
-            "conversationProviderId": "68a3329cdef552743af9de53",
-        }
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Version": "2021-04-15",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-        # 4. Push inbound SMS to GHL
-        ghl_resp = requests.post(ghl_api_url, json=payload, headers=headers)
-        ghl_data = ghl_resp.json()
-
-        if ghl_resp.status_code not in (200, 201):
-            print("⚠️ Failed to push inbound SMS to GHL:", ghl_data)
-            return JsonResponse({"error": "Failed to push to GHL", "details": ghl_data}, status=400)
-
-        # 5. Save inbound reply in DB
+        
+        # Create inbound SMSMessage first
         inbound_sms = SMSMessage.objects.create(
             ghl_account=ghl_creds,
             transmit_account=sms_msg.transmit_account,
@@ -274,15 +249,65 @@ def transmit_reply_callback(request, message_id):
             direction="inbound",
             ghl_conversation_id=conversation_id,
             ghl_contact_id=sms_msg.ghl_contact_id,
-            status="delivered",
-            sent_at=parse_datetime(data.get("datetime_entry")) if data.get("datetime_entry") else None,
+            status="pending",   # will update after charging
             transmit_message_id=data.get("response_id"),
+            sent_at=parse_datetime(data.get("datetime_entry")) if data.get("datetime_entry") else None,
         )
+
+        # 3. Deduct inbound charge from wallet
+        try:
+            wallet, _ = Wallet.objects.get_or_create(account=ghl_creds)
+            # Charge inbound SMS → pass sms.id as reference
+            cost, segments = wallet.charge_message(
+                "inbound", 
+                data.get("response", ""), 
+                reference_id=inbound_sms.id
+            )
+            inbound_sms.cost = cost
+            inbound_sms.segments = segments
+
+            # 4. Push inbound SMS into GHL conversation
+            ghl_api_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
+
+            payload = {
+                "type": "SMS",
+                "message": data.get("response"),
+                "conversationId": conversation_id,
+                "conversationProviderId": "68a3329cdef552743af9de53",
+            }
+
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Version": "2021-04-15",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+
+            ghl_resp = requests.post(ghl_api_url, json=payload, headers=headers)
+            ghl_data = ghl_resp.json()
+
+            if ghl_resp.status_code not in (200, 201):
+                print("⚠️ Failed to push inbound SMS to GHL:", ghl_data)
+                status = "failed"
+            else:
+                status = "delivered"
+        except ValidationError as e:
+            # ❌ No balance → queue inbound SMS
+            inbound_sms.status = "queued"
+            inbound_sms.cost = 0
+            inbound_sms.segments = (len(data.get("response", "")) // 160) + 1
+            ghl_data = None
+            print("⚠️ Inbound SMS queued:", str(e))
+        
+        inbound_sms.save()
 
         return JsonResponse({
             "success": True,
             "ghl_response": ghl_data,
             "saved_sms_id": str(inbound_sms.id),
+            "status": inbound_sms.status,
+            "cost": float(inbound_sms.cost),
+            "remaining_balance": float(wallet.balance),
         })
 
     except Exception as e:
