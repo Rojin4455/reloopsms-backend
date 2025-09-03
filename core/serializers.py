@@ -68,9 +68,27 @@ class GHLAuthCredentialsSerializer(serializers.ModelSerializer):
             wallet.save()
 
         return instance
+    
+class WalletSerializerForTransaction(serializers.ModelSerializer):
+    account_user_id = serializers.CharField(source="account.user_id", read_only=True)
+    company_id = serializers.CharField(source="account.company_id", read_only=True)
+    location_name = serializers.CharField(source="account.location_name", read_only=True)
+
+    class Meta:
+        model = Wallet
+        fields = [
+            "id",
+            "account_user_id",
+            "company_id",
+            "location_name",
+            "balance",
+            "inbound_segment_charge",
+            "outbound_segment_charge",
+            "updated_at",
+        ]
 
 class WalletTransactionSerializer(serializers.ModelSerializer):
-    wallet = serializers.PrimaryKeyRelatedField(read_only=True)
+    wallet = WalletSerializerForTransaction(read_only=True)
     account = serializers.CharField(source="wallet.account.user_id", read_only=True)
 
     class Meta:
@@ -86,3 +104,45 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
             "reference_id",
             "created_at",
         ]
+    
+class WalletTransactionListingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletTransaction
+        fields = [
+            "id",
+            "transaction_type",
+            "amount",
+            "balance_after",
+            "description",
+            "reference_id",
+            "created_at",
+        ]
+
+
+class WalletListingSerializer(serializers.ModelSerializer):
+    account_user_id = serializers.CharField(source="account.user_id", read_only=True)
+    company_id = serializers.CharField(source="account.company_id", read_only=True)
+    location_name = serializers.CharField(source="account.location_name", read_only=True)
+    transactions = serializers.SerializerMethodField()
+    total_transactions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Wallet
+        fields = [
+            "id",
+            "account_user_id",
+            "company_id",
+            "location_name",
+            "balance",
+            "inbound_segment_charge",
+            "outbound_segment_charge",
+            "updated_at",
+            "transactions",
+            "total_transactions"
+        ]
+    def get_transactions(self, obj):
+        recent_transactions = obj.transactions.order_by("-created_at")[:5]
+        return WalletTransactionListingSerializer(recent_transactions, many=True).data
+    
+    def get_total_transactions(self, obj):
+        return obj.transactions.count()
