@@ -257,3 +257,7 @@ class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     """List all transactions (with filtering support)"""
     queryset = WalletTransaction.objects.select_related("wallet", "wallet__account")
     serializer_class = WalletTransactionSerializer
+
+
+
+

@@ -12,6 +12,10 @@ from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 from django.core.exceptions import ValidationError
 
+from rest_framework import generics, filters
+from django_filters.rest_framework import DjangoFilterBackend
+from .filters import SMSMessageFilter  # import your filter
+
 # Create your views here.
 @csrf_exempt
 def conversation_webhook_handler(request):
@@ -120,7 +124,7 @@ def ghl_webhook_handler(request):
                 return JsonResponse({
                     "error": "Failed to send SMS",
                     "details": result['error']
-                }, status=500)
+                }, status=400)
         
         return JsonResponse({"message": "Webhook received"}, status=200)
         
@@ -203,6 +207,7 @@ from .models import WebhookLog, GHLTransmitSMSMapping, SMSMessage, TransmitSMSAc
 from django.shortcuts import get_object_or_404
 
 from django.utils.dateparse import parse_datetime
+from sms_management_app.tasks import process_sms_message
 
 @csrf_exempt
 def transmit_reply_callback(request, message_id):
@@ -214,32 +219,30 @@ def transmit_reply_callback(request, message_id):
         data = request.GET.dict()
         print("📩 Reply webhook received:", data)
 
-        # Example incoming data
-        # {
-        #   'user_id': '197820',
-        #   'rate': '10',
-        #   'mobile': '61414829252',
-        #   'response': 'Hi there',
-        #   'message_id': '1434767692',
-        #   'response_id': '132669109',
-        #   'longcode': '61430253994',
-        #   'datetime_entry': '2025-08-14 12:33:18',
-        #   'is_optout': 'no'
-        # }
+        # Example incoming data 
+        # # { 
+        # # 'user_id': '197820', 
+        # # 'rate': '10', 
+        # # 'mobile': # '61414829252', 
+        # # 'response': 'Hi there', 
+        # # 'message_id': '1434767692', 
+        # # 'response_id': '132669109', 
+        # # 'longcode': '61430253994', 
+        # # 'datetime_entry': '2025-08-14 12:33:18', 
+        # # 'is_optout': 'no' 
+        # # }
 
         # 1. Find the matching outbound SMS record
         sms_msg = get_object_or_404(SMSMessage, ghl_message_id=message_id)
 
         # 2. Get GHL credentials + conversation info
         ghl_creds = sms_msg.ghl_account
-        access_token = ghl_creds.access_token
         conversation_id = sms_msg.ghl_conversation_id
-        conversation_provider_id = ghl_creds.company_id   # <-- assuming this is correct
 
-        if not conversation_id or not conversation_provider_id:
+        if not conversation_id or not ghl_creds.company_id:
             return JsonResponse({"error": "Missing GHL IDs"}, status=400)
-        
-        # Create inbound SMSMessage first
+
+        # 3. Create inbound SMS record (initially queued → processed by Celery)
         inbound_sms = SMSMessage.objects.create(
             ghl_account=ghl_creds,
             transmit_account=sms_msg.transmit_account,
@@ -249,65 +252,19 @@ def transmit_reply_callback(request, message_id):
             direction="inbound",
             ghl_conversation_id=conversation_id,
             ghl_contact_id=sms_msg.ghl_contact_id,
-            status="pending",   # will update after charging
+            status="queued",  # Celery will update after processing
             transmit_message_id=data.get("response_id"),
             sent_at=parse_datetime(data.get("datetime_entry")) if data.get("datetime_entry") else None,
         )
 
-        # 3. Deduct inbound charge from wallet
-        try:
-            wallet, _ = Wallet.objects.get_or_create(account=ghl_creds)
-            # Charge inbound SMS → pass sms.id as reference
-            cost, segments = wallet.charge_message(
-                "inbound", 
-                data.get("response", ""), 
-                reference_id=inbound_sms.id
-            )
-            inbound_sms.cost = cost
-            inbound_sms.segments = segments
-
-            # 4. Push inbound SMS into GHL conversation
-            ghl_api_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
-
-            payload = {
-                "type": "SMS",
-                "message": data.get("response"),
-                "conversationId": conversation_id,
-                "conversationProviderId": "68a3329cdef552743af9de53",
-            }
-
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Version": "2021-04-15",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
-
-            ghl_resp = requests.post(ghl_api_url, json=payload, headers=headers)
-            ghl_data = ghl_resp.json()
-
-            if ghl_resp.status_code not in (200, 201):
-                print("⚠️ Failed to push inbound SMS to GHL:", ghl_data)
-                status = "failed"
-            else:
-                status = "delivered"
-        except ValidationError as e:
-            # ❌ No balance → queue inbound SMS
-            inbound_sms.status = "queued"
-            inbound_sms.cost = 0
-            inbound_sms.segments = (len(data.get("response", "")) // 160) + 1
-            ghl_data = None
-            print("⚠️ Inbound SMS queued:", str(e))
-        
-        inbound_sms.save()
+        # 4. Kick off Celery task (handles wallet + GHL push with rate limits)
+        process_sms_message.delay(str(inbound_sms.id))
 
         return JsonResponse({
             "success": True,
-            "ghl_response": ghl_data,
             "saved_sms_id": str(inbound_sms.id),
+            "queued_for_processing": True,
             "status": inbound_sms.status,
-            "cost": float(inbound_sms.cost),
-            "remaining_balance": float(wallet.balance),
         })
 
     except Exception as e:
@@ -352,6 +309,62 @@ class SetupTransmitAccountView(View):
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
+
+
+
+
+
+
+
 class SMSMessageListView(generics.ListAPIView):
-    queryset = SMSMessage.objects.all().order_by('-created_at')  # latest first
+    queryset = SMSMessage.objects.all().order_by('-created_at')
     serializer_class = SMSMessageSerializer
+
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = SMSMessageFilter
+
+    # Allow searching by phone numbers or message content
+    search_fields = ["to_number", "from_number", "message_content", "ghl_account__location_name", "transmit_account__account_name"]
+
+    # Allow ordering by fields
+    ordering_fields = ["created_at", "sent_at", "delivered_at", "status", "direction"]
+
+
+from decimal import Decimal
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def wallet_add_funds(request, location_id):
+    """
+    Webhook endpoint to add funds to a wallet linked to a GHL account.
+    URL: /wallet/<location_id>/add-funds/
+    Expected JSON body: { "amount": 50.00, "reference_id": "txn_123" }
+    """
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+        amount = Decimal(str(data.get("amount", 0)))
+        reference_id = data.get("reference_id")
+
+        if amount <= 0:
+            return JsonResponse({"error": "Invalid amount"}, status=400)
+
+        try:
+            account = GHLAuthCredentials.objects.get(location_id=location_id)
+        except GHLAuthCredentials.DoesNotExist:
+            return JsonResponse({"error": "GHL account not found"}, status=404)
+
+        # ✅ Ensure wallet exists (create if missing)
+        wallet, created = Wallet.objects.get_or_create(account=account)
+
+        new_balance = wallet.add_funds(amount, reference_id=reference_id)
+
+        return JsonResponse({
+            "message": "Funds added successfully",
+            "location_id": location_id,
+            "amount_added": str(amount),
+            "new_balance": str(new_balance),
+            "reference_id": reference_id,
+            "wallet_created": created,  # True if a new wallet was made
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
