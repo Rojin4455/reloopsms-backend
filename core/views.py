@@ -1,13 +1,16 @@
-from django.shortcuts import render
-from decouple import config
 import requests
-from django.http import JsonResponse
 import json
+from django.shortcuts import render
+from django.http import JsonResponse
+from decouple import config
 from django.shortcuts import redirect, render
-from core.models import GHLAuthCredentials
 from django.views.decorators.csrf import csrf_exempt
-from core.services import get_location_name
 from urllib.parse import urlencode
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Sum, Count, Q
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated,IsAdminUser
@@ -15,14 +18,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework import viewsets
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate
-from .serializers import UserSerializer, RegisterSerializer
 from rest_framework import generics
 from rest_framework.decorators import action
-from .models import GHLAuthCredentials, Wallet, WalletTransaction
-from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.response import Response
 
+from core.models import GHLAuthCredentials
+from core.services import get_location_name
+from .serializers import UserSerializer, RegisterSerializer
+from .models import GHLAuthCredentials, Wallet, WalletTransaction
+from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer, WalletListingSerializer, WalletTransactionListingSerializer
+from .filters import WalletFilter, WalletTransactionFilter
 
 
 # Create your views here.
@@ -259,5 +265,46 @@ class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = WalletTransactionSerializer
 
 
+class WalletListingViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Wallet.objects.all().select_related("account")
+    serializer_class = WalletListingSerializer
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = WalletFilter
+    ordering_fields = ["balance", "updated_at"]
+    ordering = ["-updated_at"]
+    search_fields = [
+        "account__location_name",
+        "account__business_email",
+        "account__business_phone",
+        "account__contact_name",
+    ]
+
+
+class WalletTransactionListingViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = WalletTransaction.objects.all().select_related("wallet", "wallet__account")
+    serializer_class = WalletTransactionSerializer
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = WalletTransactionFilter
+    ordering_fields = ["created_at", "amount"]
+    ordering = ["-created_at"]
+    search_fields = [
+        "wallet__account__location_name",
+        "wallet__account__business_email",
+        "wallet__account__business_phone",
+        "wallet__account__contact_name",
+    ]
+
+class WalletSummaryView(APIView):
+    def get(self, request, *args, **kwargs):
+        qs = Wallet.objects.all()
+
+        summary_data = {
+            "total_accounts": qs.count(),
+            "total_balance": qs.aggregate(total=Sum("balance"))["total"] or 0,
+            "total_credits": WalletTransaction.objects.filter(transaction_type="credit").aggregate(total=Sum("amount"))["total"] or 0,
+            "total_debits": WalletTransaction.objects.filter(transaction_type="debit").aggregate(total=Sum("amount"))["total"] or 0,
+            "total_transactions": WalletTransaction.objects.count(),
+        }
+        return Response(summary_data, status=200)
 
 
