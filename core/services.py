@@ -12,4 +12,4 @@ def get_location_name(location_id: str, access_token: str) -> str:
     response.raise_for_status()  # Raise exception for HTTP errors
 
     data = response.json()
-    return data.get("location", {}).get("name"),  data.get("location", {}).get("timezone")
+    return data

@@ -1,10 +1,19 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from core.views import *
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
     TokenVerifyView,
 )
+
+router = DefaultRouter()
+router.register(r"wallets", WalletViewSet, basename="wallet")
+router.register(r"transactions", WalletTransactionViewSet, basename="transaction")
+
+router.register(r"wallets-list", WalletListingViewSet, basename="wallets")
+router.register(r"transactions-list", WalletTransactionListingViewSet, basename="transactions")
+
 
 urlpatterns = [
     path("auth/connect/", auth_connect, name="oauth_connect"),
@@ -18,6 +27,11 @@ urlpatterns = [
     
     # Custom endpoints
     path('logout/', LogoutView.as_view(), name='logout'),
-    # path('user/', UserView.as_view(), name='user'),
-    # path('register/', RegisterView.as_view(), name='register'),
+    path('ghl-auth-credentials/', GHLAuthCredentialsListView.as_view(), name='ghl-auth-credentials-list'),
+    path('ghl-auth-credentials/<str:pk>/', GHLAuthCredentialsDetailView.as_view(), name='ghl-auth-credentials-detail'),
+    path('test-provider', webhook_handler, name='test-provider'),
+
+    path('wallet-summary/', WalletSummaryView.as_view()),
+
+    path("", include(router.urls)),
 ]

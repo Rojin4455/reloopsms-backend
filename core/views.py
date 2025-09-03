@@ -1,22 +1,34 @@
-from django.shortcuts import render
-from decouple import config
 import requests
-from django.http import JsonResponse
 import json
+from django.shortcuts import render
+from django.http import JsonResponse
+from decouple import config
 from django.shortcuts import redirect, render
-from core.models import GHLAuthCredentials
 from django.views.decorators.csrf import csrf_exempt
-from core.services import get_location_name
 from urllib.parse import urlencode
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Sum, Count, Q
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated,IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate
+from rest_framework import viewsets
+from rest_framework import generics
+from rest_framework.decorators import action
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.response import Response
+
+from core.models import GHLAuthCredentials
+from core.services import get_location_name
 from .serializers import UserSerializer, RegisterSerializer
+from .models import GHLAuthCredentials, Wallet, WalletTransaction
+from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer, WalletListingSerializer, WalletTransactionListingSerializer
+from .filters import WalletFilter, WalletTransactionFilter
 
 
 # Create your views here.
@@ -48,6 +60,19 @@ def callback(request):
     return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?code={code}')
 
 
+
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.utils.decorators import method_decorator
+from django.views import View
+import json
+from sms_management_app.services import GHLIntegrationService, TransmitSMSService
+from core.models import GHLAuthCredentials
+from django.utils import timezone
+from sms_management_app.utils import format_password
+
 def tokens(request):
     authorization_code = request.GET.get("code")
 
@@ -77,9 +102,8 @@ def tokens(request):
             }, status=400)
         
 
-        location_name, timezone = get_location_name(location_id=response_data.get("locationId"), access_token=response_data.get('access_token'))
-        
-
+        data = get_location_name(location_id=response_data.get("locationId"), access_token=response_data.get('access_token'))
+        location_data = data.get("location")
         obj, created = GHLAuthCredentials.objects.update_or_create(
             location_id= response_data.get("locationId"),
             defaults={
@@ -90,15 +114,32 @@ def tokens(request):
                 "user_type": response_data.get("userType"),
                 "company_id": response_data.get("companyId"),
                 "user_id":response_data.get("userId"),
-                "location_name":location_name,
-                "timezone": timezone
+                "location_name":location_data.get("name"),
+                "timezone": location_data.get("timezone"),
+                "business_email":location_data.get("email"),
+                "business_phone":location_data.get("phone")
             }
         )
+        password = format_password(obj.location_name)
+        print("password: ", password)
+
+        account_details = {
+            'name': obj.location_name,
+            'email': obj.business_email,
+            'phone': obj.business_phone,
+            'password': password
+        }
+
+        print("changes updates")
+        
+        # # Setup TransmitSMS account
+        service = GHLIntegrationService()
+        mapping = service.setup_transmit_account_for_ghl(obj, account_details)
         query_params = urlencode({
             "locationId":response_data.get("locationId"),
         })
 
-        frontend_url = f"{FRONTEND_URL}/admin/dashboard?{query_params}"
+        frontend_url = f"{FRONTEND_URL}/highlevel-accounts?{query_params}"
         
         return redirect(frontend_url)
         
@@ -109,24 +150,43 @@ def tokens(request):
 
 
 
-# class RegisterView(APIView):
-#     """
-#     Register a new user
-#     """
-#     permission_classes = [AllowAny]
+@method_decorator(csrf_exempt, name='dispatch')
+class SetupTransmitAccountView(View):
+    """Setup TransmitSMS account for GHL location"""
     
-#     def post(self, request):
-#         serializer = RegisterSerializer(data=request.data)
-#         if serializer.is_valid():
-#             user = serializer.save()
-#             refresh = RefreshToken.for_user(user)
-#             return Response({
-#                 'user': UserSerializer(user).data,
-#                 'refresh': str(refresh),
-#                 'access': str(refresh.access_token),
-#                 'message': 'User registered successfully'
-#             }, status=status.HTTP_201_CREATED)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+            location_id = data.get('location_id')
+            account_details = {
+                'name': data.get('account_name'),
+                'email': data.get('email'),
+                'phone': data.get('phone'),
+                'password': data.get('password', 'default_password_123')
+            }
+            
+            # Get GHL account
+            try:
+                ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+            except GHLAuthCredentials.DoesNotExist:
+                return JsonResponse({
+                    "error": "GHL account not found"
+                }, status=404)
+            
+            # Setup TransmitSMS account
+            service = GHLIntegrationService()
+            mapping = service.setup_transmit_account_for_ghl(ghl_account, account_details)
+            
+            return JsonResponse({
+                "message": "TransmitSMS account setup successfully",
+                "mapping_id": str(mapping.id),
+                "transmit_account_id": mapping.transmit_account.account_id
+            }, status=200)
+            
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
 
 
 class LogoutView(APIView):
@@ -149,28 +209,102 @@ class LogoutView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class UserView(APIView):
-#     """
-#     Get current user details
-#     """
-#     permission_classes = [IsAuthenticated]
-    
-#     def get(self, request):
-#         serializer = UserSerializer(request.user)
-#         return Response(serializer.data)
-    
-#     def put(self, request):
-#         serializer = UserSerializer(request.user, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# import math
-# text = TextMessage.objects.get(message_id='jWtWLCzqunerFNIwr7eK')
-# print("conversation_id:    ",text.conversation.conversation_id)
-# print("text: ", len(text.body))
+class GHLAuthCredentialsListView(generics.ListAPIView):
+    """
+    GET /api/ghl-auth-credentials/ → List all GHL credentials
+    """
+    queryset = GHLAuthCredentials.objects.all()
+    serializer_class = GHLAuthCredentialsSerializer
+    permission_classes = [IsAdminUser]
 
-# print("segmants:    ",math.ceil(len(text.body) / 160))
-# print(text.conversation.contact.phone)
+
+class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /api/ghl-auth-credentials/<int:pk>/ → Retrieve one
+    PUT    /api/ghl-auth-credentials/<int:pk>/ → Update
+    DELETE /api/ghl-auth-credentials/<int:pk>/ → Delete
+    """
+    queryset = GHLAuthCredentials.objects.all()
+    serializer_class = GHLAuthCredentialsSerializer
+    permission_classes = [IsAdminUser]
+
+@csrf_exempt
+def webhook_handler(request):
+    if request.method != "POST":
+        return JsonResponse({"message": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        print("date:----- ", data)
+        # WebhookLog.objects.create(data=data)
+        # event_type = data.get("type")
+        # handle_webhook_event.delay(data, event_type)
+        return JsonResponse({"message":"Webhook received"}, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+class WalletViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only Wallet API for admin"""
+    queryset = Wallet.objects.select_related("account")
+    serializer_class = WalletSerializer
+
+    @action(detail=True, methods=["get"])
+    def transactions(self, request, pk=None):
+        """Get all transactions for a given wallet"""
+        wallet = self.get_object()
+        transactions = WalletTransaction.objects.filter(wallet=wallet)
+        serializer = WalletTransactionSerializer(transactions, many=True)
+        return Response(serializer.data)
+
+
+class WalletTransactionViewSet(viewsets.ReadOnlyModelViewSet):
+    """List all transactions (with filtering support)"""
+    queryset = WalletTransaction.objects.select_related("wallet", "wallet__account")
+    serializer_class = WalletTransactionSerializer
+
+
+class WalletListingViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Wallet.objects.all().select_related("account")
+    serializer_class = WalletListingSerializer
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = WalletFilter
+    ordering_fields = ["balance", "updated_at"]
+    ordering = ["-updated_at"]
+    search_fields = [
+        "account__location_name",
+        "account__business_email",
+        "account__business_phone",
+        "account__contact_name",
+    ]
+
+
+class WalletTransactionListingViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = WalletTransaction.objects.all().select_related("wallet", "wallet__account")
+    serializer_class = WalletTransactionSerializer
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = WalletTransactionFilter
+    ordering_fields = ["created_at", "amount"]
+    ordering = ["-created_at"]
+    search_fields = [
+        "wallet__account__location_name",
+        "wallet__account__business_email",
+        "wallet__account__business_phone",
+        "wallet__account__contact_name",
+    ]
+
+class WalletSummaryView(APIView):
+    def get(self, request, *args, **kwargs):
+        qs = Wallet.objects.all()
+
+        summary_data = {
+            "total_accounts": qs.count(),
+            "total_balance": qs.aggregate(total=Sum("balance"))["total"] or 0,
+            "total_credits": WalletTransaction.objects.filter(transaction_type="credit").aggregate(total=Sum("amount"))["total"] or 0,
+            "total_debits": WalletTransaction.objects.filter(transaction_type="debit").aggregate(total=Sum("amount"))["total"] or 0,
+            "total_transactions": WalletTransaction.objects.count(),
+        }
+        return Response(summary_data, status=200)
+
+
