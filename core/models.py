@@ -3,6 +3,7 @@ import uuid
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.timezone import now
+from decimal import Decimal
 
 # Create your models here.
 
@@ -76,6 +77,8 @@ class Wallet(models.Model):
         return cost, segments
     
     def refund(self, amount, *, reference_id=None, description="Refund"):
+
+        amount = Decimal(str(amount)) 
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(pk=self.pk)
             wallet.balance += amount
@@ -92,6 +95,8 @@ class Wallet(models.Model):
 
     def add_funds(self, amount: float, reference_id=None):
         """Add funds from webhook/payment"""
+
+        amount = Decimal(str(amount)) 
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(pk=self.pk)
             wallet.balance += amount
@@ -106,33 +111,34 @@ class Wallet(models.Model):
                 reference_id=reference_id
             )
 
-        from .services import GHLIntegrationService  # import inside to avoid circular import
-        service = GHLIntegrationService()
+        # ✅ After funds are added, retry queued SMS (both outbound + inbound)
+        from sms_management_app.tasks import process_sms_message
 
         queued_messages = self.account.smsmessage_set.filter(status="queued").order_by("created_at")
         for sms in queued_messages:
-            if sms.direction == 'outbound':
+            if sms.direction == "outbound":
+                # keep your existing logic — outbound is handled here directly
                 try:
-                    cost, segments = self.charge_message("outbound", sms.message_content)
+                    cost, segments = self.charge_message("outbound", sms.message_content, reference_id=sms.id)
+                    from sms_management_app.services import GHLIntegrationService
+                    service = GHLIntegrationService()
                     result = service.send_outbound_sms(sms, cost, segments)
                     if result["success"]:
                         sms.status = "sent"
                         sms.sent_at = timezone.now()
                         sms.transmit_message_id = result.get("transmit_message_id")
                     else:
-                         # refund since SMS failed after charging
-                        self.refund(
-                            cost,
-                            reference_id=sms.id,
-                            description="Refund for failed queued SMS"
-                        )
+                        # Refund if failed
+                        self.refund(cost, reference_id=sms.id, description="Refund for failed queued SMS")
                         sms.status = "failed"
                         sms.error_message = result["error"]
-
-                    sms.save()
                 except ValidationError:
-                    # stop if balance is still insufficient
-                    break
+                    sms.status = "queued"  # still insufficient funds
+                sms.save()
+
+            elif sms.direction == "inbound":
+                # ✅ For inbound, just enqueue the Celery task to handle rate limits
+                process_sms_message.delay(str(sms.id))
 
         return self.balance
     

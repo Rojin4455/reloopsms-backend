@@ -306,3 +306,5 @@ class WalletSummaryView(APIView):
             "total_transactions": WalletTransaction.objects.count(),
         }
         return Response(summary_data, status=200)
+
+

@@ -191,3 +191,97 @@ def urgent_update_ghl_message_status(self, message_id, status, ghl_token, sms_me
         args=[message_id, status, ghl_token, sms_message_id],
         priority=9  # High priority
     )
+
+
+
+from celery import shared_task
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+import requests
+from core.models import Wallet
+from sms_management_app.models import SMSMessage
+import time
+
+# enforce rate-limit per worker
+@shared_task(rate_limit="9/s", bind=True, max_retries=3, default_retry_delay=5)
+def process_sms_message(self, sms_id: str):
+    """
+    Push a queued inbound SMS message into GHL, respecting API rate limits (10 req/s).
+    """
+    try:
+        print(f"🔎 [Task Start] Processing inbound SMS {sms_id}")
+
+        sms = SMSMessage.objects.get(id=sms_id)
+        wallet = Wallet.objects.get(account=sms.ghl_account)
+
+        print(f"✅ Found SMS {sms.id} (direction={sms.direction}, status={sms.status})")
+        print(f"💰 Wallet Balance Before: {wallet.balance}")
+
+        if sms.direction != "inbound" or sms.status != "queued":
+            msg = f"⏩ SMS {sms_id} skipped (not inbound or not queued)."
+            print(msg)
+            return msg
+
+        # Charge wallet for inbound SMS
+        try:
+            cost, segments = wallet.charge_message(
+                "inbound", sms.message_content, reference_id=sms.id
+            )
+            sms.cost = cost
+            sms.segments = segments
+            print(f"💸 Charged {cost} for inbound SMS ({segments} segments). New Balance={wallet.balance}")
+        except ValidationError as e:
+            # still no funds → keep queued
+            sms.status = "queued"
+            sms.save()
+            print(f"⚠️ SMS {sms_id} re-queued (insufficient balance): {str(e)}")
+            return f"SMS {sms_id} re-queued (insufficient balance)."
+
+        # Push inbound message to GHL
+        ghl_api_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
+        payload = {
+            "type": "SMS",
+            "message": sms.message_content,
+            "conversationId": sms.ghl_conversation_id,
+            "conversationProviderId": "68a3329cdef552743af9de53", #conversationProvidedId
+        }
+        headers = {
+            "Authorization": f"Bearer {sms.ghl_account.access_token}",
+            "Version": "2021-04-15",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        print(f"📤 Sending inbound SMS {sms.id} to GHL → Payload: {payload}")
+        resp = requests.post(ghl_api_url, json=payload, headers=headers)
+        data = resp.json()
+        print(f"📥 GHL Response (status={resp.status_code}): {data}")
+
+        if resp.status_code in (200, 201):
+            sms.status = "delivered"
+            sms.sent_at = timezone.now()
+            print(f"✅ Inbound SMS {sms.id} delivered successfully.")
+        else:
+            # failed → refund and mark failed
+            wallet.refund(
+                sms.cost,
+                reference_id=sms.id,
+                description="Refund for failed inbound SMS"
+            )
+            sms.status = "failed"
+            sms.error_message = data.get("error") or str(data)
+            print(f"❌ Failed to deliver inbound SMS {sms.id}, refunded {sms.cost}. Error={sms.error_message}")
+
+        sms.save()
+        final_msg = f"Processed inbound SMS {sms_id} with status {sms.status}"
+        print(f"🏁 [Task End] {final_msg}")
+        return final_msg
+
+    except SMSMessage.DoesNotExist:
+        msg = f"⚠️ SMS {sms_id} not found"
+        print(msg)
+        return msg
+    except Exception as e:
+        print(f"🔥 Unexpected error in process_sms_message({sms_id}): {str(e)}")
+        # retry if it looks transient (network/api issue)
+        raise self.retry(exc=e)
