@@ -165,10 +165,12 @@ CELERY_TIMEZONE = 'UTC'
 
 
 
+from datetime import timedelta
+
 CELERY_BEAT_SCHEDULE = {
-    'make-api-call-every-minute': {
+    'make-api-call-every-10-hours': {
         'task': 'core.tasks.make_api_call',
-        'schedule': 60.0,
+        'schedule': timedelta(hours=10),
     },
 }
 
