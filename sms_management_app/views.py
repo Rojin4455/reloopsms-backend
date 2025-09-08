@@ -6,15 +6,18 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
-from core.models import GHLAuthCredentials, Wallet
+from core.models import GHLAuthCredentials, Wallet, WalletTransaction
 from transmitsms.models import TransmitSMSAccount
-from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer
+from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 from django.core.exceptions import ValidationError
 
 from rest_framework import generics, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .filters import SMSMessageFilter  # import your filter
+from rest_framework.permissions import AllowAny
+from django.db.models import Sum,Avg
+
 
 # Create your views here.
 @csrf_exempt
@@ -368,3 +371,89 @@ def wallet_add_funds(request, location_id):
         })
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+    
+
+from django.utils import timezone
+from datetime import timedelta
+
+class DashboardAnalyticsView(APIView):
+    
+    def get(self, request):
+        # Get query params
+        days = int(request.query_params.get('days', 30))
+        account_id = request.query_params.get('account_id')
+        
+        # Date filtering
+        end_date = timezone.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # Filter messages by date and optionally by account
+        messages_qs = SMSMessage.objects.filter(
+            created_at__gte=start_date,
+            created_at__lte=end_date
+        )
+        
+        wallets_qs = Wallet.objects.all()
+        accounts_qs = GHLAuthCredentials.objects.all()
+        transactions_qs = WalletTransaction.objects.filter(
+            created_at__gte=start_date,
+            created_at__lte=end_date
+        )
+        
+        if account_id:
+            messages_qs = messages_qs.filter(ghl_account__location_id=account_id)
+            wallets_qs = wallets_qs.filter(account__location_id=account_id)
+            accounts_qs = accounts_qs.filter(location_id=account_id)
+            transactions_qs = transactions_qs.filter(wallet__account__location_id=account_id)
+        
+        # Calculate SMS stats
+        total_messages = messages_qs.count()
+        outbound_messages = messages_qs.filter(direction='outbound').count()
+        inbound_messages = messages_qs.filter(direction='inbound').count()
+        delivered_messages = messages_qs.filter(status='delivered').count()
+        failed_messages = messages_qs.filter(status='failed').count()
+        
+        # Calculate delivery rate
+        sent_messages = messages_qs.filter(status__in=['sent', 'delivered']).count()
+        delivery_rate = (delivered_messages / sent_messages * 100) if sent_messages > 0 else 0
+        
+        # Calculate financial stats
+        total_balance = wallets_qs.aggregate(Sum('balance'))['balance__sum'] or 0
+        total_spent = transactions_qs.filter(transaction_type='debit').aggregate(Sum('amount'))['amount__sum'] or 0
+        avg_cost = messages_qs.exclude(cost=0).aggregate(Avg('cost'))['cost__avg'] or 0
+        
+        # Account stats
+        total_accounts = accounts_qs.count()
+        active_mappings = GHLTransmitSMSMapping.objects.filter(ghl_account__in=accounts_qs).count()
+        
+        # Recent activity (24 hours)
+        recent_cutoff = timezone.now() - timedelta(hours=24)
+        recent_messages = messages_qs.filter(created_at__gte=recent_cutoff).count()
+        recent_transactions = transactions_qs.filter(created_at__gte=recent_cutoff).count()
+        
+        data = {
+            'total_messages': total_messages,
+            'outbound_messages': outbound_messages,
+            'inbound_messages': inbound_messages,
+            'delivered_messages': delivered_messages,
+            'failed_messages': failed_messages,
+            'delivery_rate': round(delivery_rate, 1),
+            'total_balance': total_balance,
+            'total_spent': total_spent,
+            'avg_message_cost': round(avg_cost, 4) if avg_cost else 0,
+            'total_accounts': total_accounts,
+            'active_mappings': active_mappings,
+            'recent_messages_24h': recent_messages,
+            'recent_transactions_24h': recent_transactions,
+        }
+        
+        serializer = DashboardAnalyticsSerializer(data)
+        return Response({
+            'success': True,
+            'data': serializer.data,
+            'date_range': {
+                'days': days,
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d')
+            }
+        })

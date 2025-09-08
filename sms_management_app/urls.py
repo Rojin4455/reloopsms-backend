@@ -21,5 +21,7 @@ urlpatterns = [
     #messages list
     path('sms-messages/', SMSMessageListView.as_view(), name='sms-message-list'),
     path("wallet/<str:location_id>/add-funds/", wallet_add_funds, name="wallet_add_funds"),
+    path("dashboard/analytics/", DashboardAnalyticsView.as_view(), name="dashboard-analytics"),
+
 
 ]
