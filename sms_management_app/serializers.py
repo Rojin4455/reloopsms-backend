@@ -40,3 +40,18 @@ class DashboardAnalyticsSerializer(serializers.Serializer):
     # Recent Activity
     recent_messages_24h = serializers.IntegerField()
     recent_transactions_24h = serializers.IntegerField()
+
+
+
+class RecentMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SMSMessage
+        fields = [
+            "id",
+            "direction",
+            "to_number",
+            "from_number",
+            "status",
+            "message_content",
+            "created_at",
+        ]

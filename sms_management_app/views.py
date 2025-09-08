@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
 from core.models import GHLAuthCredentials, Wallet, WalletTransaction
 from transmitsms.models import TransmitSMSAccount
-from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer
+from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 from django.core.exceptions import ValidationError
 
@@ -448,9 +448,12 @@ class DashboardAnalyticsView(APIView):
         }
         
         serializer = DashboardAnalyticsSerializer(data)
+        latest_messages_qs = messages_qs.order_by("-created_at")[:5]
+        latest_messages = RecentMessageSerializer(latest_messages_qs, many=True).data
         return Response({
             'success': True,
             'data': serializer.data,
+            'recent_messages': latest_messages,
             'date_range': {
                 'days': days,
                 'start_date': start_date.strftime('%Y-%m-%d'),
