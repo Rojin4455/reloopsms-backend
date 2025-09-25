@@ -8,10 +8,11 @@ from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
 from core.models import GHLAuthCredentials, Wallet, WalletTransaction
 from transmitsms.models import TransmitSMSAccount
-from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer
+from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer, WalletTransactionSerializer, WalletSerializer, MappingSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 from django.core.exceptions import ValidationError
 
+from rest_framework.generics import ListAPIView
 from rest_framework import generics, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .filters import SMSMessageFilter  # import your filter
@@ -460,3 +461,153 @@ class DashboardAnalyticsView(APIView):
                 'end_date': end_date.strftime('%Y-%m-%d')
             }
         })
+    
+
+class LocationMixin:
+    """Utility to fetch account by locationId query param"""
+    def get_account(self, request):
+        location_id = request.query_params.get("locationId")
+        if not location_id:
+            return None, Response({"error": "locationId query parameter is required"},
+                                  status=status.HTTP_400_BAD_REQUEST)
+        try:
+            account = GHLAuthCredentials.objects.select_related("wallet", "transmit_sms_mapping").get(
+                location_id=location_id
+            )
+            return account, None
+        except GHLAuthCredentials.DoesNotExist:
+            return None, Response({"error": "Account not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+# ---- 1. Dashboard ----
+class GHLAccountDashboardAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        location_id = request.query_params.get("locationId")
+        if not location_id:
+            return Response({"error": "locationId query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            account = GHLAuthCredentials.objects.select_related("wallet", "transmit_sms_mapping").get(location_id=location_id)
+        except GHLAuthCredentials.DoesNotExist:
+            return Response({"error": "Account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- Wallet ---
+        wallet_serializer = WalletSerializer(account.wallet)
+
+        # --- Mapping ---
+        mapping_serializer = MappingSerializer(account.transmit_sms_mapping) if hasattr(account, "transmit_sms_mapping") else None
+
+        # --- Messages summary ---
+        messages_qs = account.smsmessage_set.all()
+        messages_summary = {
+            "recent_messages": SMSMessageSerializer(messages_qs.order_by("-created_at")[:5], many=True).data,
+            "total_sent": messages_qs.filter(direction="outbound").count(),
+            "total_delivered": messages_qs.filter(status="delivered").count(),
+            "total_failed": messages_qs.filter(status="failed").count(),
+            "outbound_count": messages_qs.filter(direction="outbound").count(),
+            "inbound_count": messages_qs.filter(direction="inbound").count(),
+        }
+
+        # --- Alerts ---
+        alerts = {
+            "low_balance": account.wallet.balance < 10,  # threshold can be customized
+            "pending_messages": messages_qs.filter(status="queued").count(),
+            "failed_messages": messages_qs.filter(status="failed").count()
+        }
+
+        data = {
+            "account": {
+                "id": account.id,
+                "user_id": account.user_id,
+                "company_id": account.company_id,
+                "location_name": account.location_name,
+                "location_id": account.location_id,
+                "business_email": account.business_email,
+                "business_phone": account.business_phone,
+                "contact_name": account.contact_name
+            },
+            "wallet": wallet_serializer.data,
+            "mapping": mapping_serializer.data if mapping_serializer else None,
+            "messages_summary": messages_summary,
+            "alerts": alerts,
+        }
+
+        return Response(data)
+
+
+
+# ---- 2. Paginated Messages ----
+class GHLAccountMessagesAPIView(LocationMixin, ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = SMSMessageSerializer
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['status', 'direction', 'to_number', 'from_number']  # filters
+    ordering_fields = ['created_at', 'cost', 'segments']  # sorting
+    ordering = ['-created_at']  # default
+
+    def get_queryset(self):
+        account, error = self.get_account(self.request)
+        if error:
+            self._error = error
+            return SMSMessage.objects.none()
+
+        qs = account.smsmessage_set.all()
+
+        # Date range filter
+        start_date = self.request.query_params.get("sent_at__gte")
+        end_date = self.request.query_params.get("sent_at__lte")
+        if start_date:
+            qs = qs.filter(sent_at__gte=start_date)
+        if end_date:
+            qs = qs.filter(sent_at__lte=end_date)
+
+        self._error = None
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        if hasattr(self, "_error") and self._error:
+            return self._error
+        return super().list(request, *args, **kwargs)
+
+
+# ---- 3. Paginated Transactions ----
+class GHLAccountTransactionsAPIView(LocationMixin, ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = WalletTransactionSerializer
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['transaction_type']  # basic filter
+    ordering_fields = ['created_at', 'amount']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        account, error = self.get_account(self.request)
+        if error:
+            self._error = error
+            return WalletTransaction.objects.none()
+
+        qs = account.wallet.transactions.all()
+
+        # Date range
+        start_date = self.request.query_params.get("created_at__gte")
+        end_date = self.request.query_params.get("created_at__lte")
+        if start_date:
+            qs = qs.filter(created_at__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__lte=end_date)
+
+        # Amount filter
+        min_amount = self.request.query_params.get("min_amount")
+        max_amount = self.request.query_params.get("max_amount")
+        if min_amount:
+            qs = qs.filter(amount__gte=min_amount)
+        if max_amount:
+            qs = qs.filter(amount__lte=max_amount)
+
+        self._error = None
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        if hasattr(self, "_error") and self._error:
+            return self._error
+        return super().list(request, *args, **kwargs)

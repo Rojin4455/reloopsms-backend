@@ -1,6 +1,8 @@
 from rest_framework import serializers
-from .models import GHLTransmitSMSMapping, SMSMessage
-from core.models import GHLAuthCredentials
+from django.db.models import Count, Q, Sum
+
+from .models import GHLTransmitSMSMapping, SMSMessage, WebhookLog
+from core.models import GHLAuthCredentials, Wallet, WalletTransaction
 
 class GHLTransmitSMSMappingSerializer(serializers.ModelSerializer):
     class Meta:
@@ -55,3 +57,86 @@ class RecentMessageSerializer(serializers.ModelSerializer):
             "message_content",
             "created_at",
         ]
+        
+# --- Shared serializers ---
+class WalletTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletTransaction
+        fields = ["id", "transaction_type", "amount", "balance_after", "description", "reference_id", "created_at"]
+
+class SMSMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SMSMessage
+        fields = [
+            "id", "message_content", "to_number", "from_number",
+            "direction", "status", "cost", "segments",
+            "sent_at", "delivered_at", "created_at"
+        ]
+
+# --- Dashboard serializers ---
+
+
+
+
+class WalletTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletTransaction
+        fields = ["id", "transaction_type", "amount", "balance_after", "description", "reference_id", "created_at"]
+
+class SMSMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SMSMessage
+        fields = [
+            "id", "message_content", "to_number", "from_number",
+            "direction", "status", "cost", "segments",
+            "sent_at", "delivered_at", "created_at"
+        ]
+
+class WalletSerializer(serializers.ModelSerializer):
+    recent_transactions = serializers.SerializerMethodField()
+    total_spent = serializers.SerializerMethodField()
+    total_credits = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Wallet
+        fields = ["balance", "inbound_segment_charge", "outbound_segment_charge",
+                  "recent_transactions", "total_spent", "total_credits"]
+
+    def get_recent_transactions(self, obj):
+        transactions = obj.transactions.all().order_by("-created_at")[:5]
+        return WalletTransactionSerializer(transactions, many=True).data
+
+    def get_total_spent(self, obj):
+        spent = obj.transactions.filter(transaction_type="debit").aggregate(total=Sum("amount"))["total"] or 0
+        return float(spent)
+
+    def get_total_credits(self, obj):
+        credits = obj.transactions.filter(transaction_type="credit").aggregate(total=Sum("amount"))["total"] or 0
+        return float(credits)
+
+class MappingSerializer(serializers.ModelSerializer):
+    transmit_account_name = serializers.CharField(source="transmit_account.account_name", read_only=True)
+
+    class Meta:
+        model = GHLTransmitSMSMapping
+        fields = ["id", "transmit_account_name", "mapped_at"]
+
+class MessagesSummarySerializer(serializers.Serializer):
+    recent_messages = SMSMessageSerializer(many=True)
+    total_sent = serializers.IntegerField()
+    total_delivered = serializers.IntegerField()
+    total_failed = serializers.IntegerField()
+    outbound_count = serializers.IntegerField()
+    inbound_count = serializers.IntegerField()
+
+class AlertsSerializer(serializers.Serializer):
+    low_balance = serializers.BooleanField()
+    pending_messages = serializers.IntegerField()
+    failed_messages = serializers.IntegerField()
+
+class DashboardSerializer(serializers.Serializer):
+    account = serializers.DictField()
+    wallet = WalletSerializer()
+    mapping = MappingSerializer()
+    messages_summary = MessagesSummarySerializer()
+    alerts = AlertsSerializer()

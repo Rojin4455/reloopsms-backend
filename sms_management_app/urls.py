@@ -23,5 +23,7 @@ urlpatterns = [
     path("wallet/<str:location_id>/add-funds/", wallet_add_funds, name="wallet_add_funds"),
     path("dashboard/analytics/", DashboardAnalyticsView.as_view(), name="dashboard-analytics"),
 
-
+    path("ghl-account/dashboard/", GHLAccountDashboardAPIView.as_view(), name="ghl-dashboard"),
+    path("ghl-account/messages/", GHLAccountMessagesAPIView.as_view(), name="ghl-messages"),
+    path("ghl-account/transactions/", GHLAccountTransactionsAPIView.as_view(), name="ghl-transactions"),
 ]
