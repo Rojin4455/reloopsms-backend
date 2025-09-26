@@ -39,3 +39,46 @@ def make_api_call():
 
 
         
+
+from django.db import transaction
+from decimal import Decimal
+from core.models import Wallet, WalletTransaction, GHLAuthCredentials
+from core.service import GHLService
+from django.conf import settings
+
+MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"
+
+@shared_task
+def sync_all_wallets_with_ghl():
+    # find the creds for main location
+    try:
+        main_creds = GHLAuthCredentials.objects.get(location_id=MAIN_LOCATION_ID)
+    except GHLAuthCredentials.DoesNotExist:
+        return
+
+    service = GHLService(access_token=main_creds.access_token)
+
+    for wallet in Wallet.objects.select_related("account").all():
+        try:
+           if wallet.ghl_object_id:
+                print("type(wallet.cred_remaining)",type(wallet.cred_remaining))
+                print("type(wallet.seg_remaining)",type(wallet.seg_remaining))
+                print("type(wallet.cred_spent)",type(wallet.cred_spent))
+                print("type(wallet.seg_used)",type(wallet.seg_used))
+                payload = {
+                    "cred_remaining": {
+                        "currency": "default",
+                        "value": float(wallet.cred_remaining)
+                    },
+                    "seg_remaining": int(wallet.seg_remaining),
+                    "cred_spent": {
+                        "currency": "default",
+                        "value": float(wallet.cred_spent)
+                    },
+                    "seg_used": int(wallet.seg_used),
+                }                
+                service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
+           pass
+        except Exception:
+            # log exception and continue with next wallet
+            continue

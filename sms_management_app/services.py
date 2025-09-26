@@ -32,6 +32,7 @@ class TransmitSMSService:
             'email': email,
             'msisdn': phone,
             'password': password,
+            'client_pays':False,
         }
 
         print(f"[INFO] Creating subaccount for {name} ({email})")

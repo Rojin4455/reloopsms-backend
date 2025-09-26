@@ -172,6 +172,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.make_api_call',
         'schedule': timedelta(hours=10),
     },
+    'sync_all_wallets_with_ghl': {
+        'task': 'core.tasks.sync_all_wallets_with_ghl',
+        'schedule': timedelta(minutes=5),
+    },
 }
 
 

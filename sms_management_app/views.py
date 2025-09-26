@@ -361,7 +361,7 @@ def wallet_add_funds(request, location_id):
         wallet, created = Wallet.objects.get_or_create(account=account)
 
         new_balance = wallet.add_funds(amount, reference_id=reference_id)
-
+        
         return JsonResponse({
             "message": "Funds added successfully",
             "location_id": location_id,

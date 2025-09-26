@@ -36,8 +36,21 @@ class Wallet(models.Model):
     account = models.OneToOneField(GHLAuthCredentials, on_delete=models.CASCADE, related_name="wallet")
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
-    inbound_segment_charge = models.DecimalField(max_digits=6, decimal_places=2, default=0.01)  # per segment
-    outbound_segment_charge = models.DecimalField(max_digits=6, decimal_places=2, default=0.02)  # per segment
+    inbound_segment_charge = models.DecimalField(max_digits=6, decimal_places=2, default=0.00)  # per segment
+    outbound_segment_charge = models.DecimalField(max_digits=6, decimal_places=3, default=0.074)
+
+    ghl_object_id = models.CharField(max_length=255, blank=True, null=True)
+    
+    cred_purchased = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    cred_spent = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    cred_remaining = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+
+    seg_purchased = models.BigIntegerField(default=0)
+    seg_remaining = models.BigIntegerField(default=0)
+    seg_used = models.BigIntegerField(default=0)
+
+    business_name = models.CharField(max_length=255, blank=True, null=True)
+    contact = models.CharField(max_length=255, blank=True, null=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -54,16 +67,27 @@ class Wallet(models.Model):
             cost = segments * self.outbound_segment_charge
         else:
             raise ValidationError("Invalid message direction")
-        
+
         with transaction.atomic():
-            # Lock the wallet row for update
             wallet = Wallet.objects.select_for_update().get(pk=self.pk)
 
             if wallet.balance < cost:
                 raise ValidationError("Insufficient balance to send message")
 
+            # Deduct balance
             wallet.balance -= cost
-            wallet.save(update_fields=["balance"])
+
+            if direction == "outbound":
+                # Update credits + segments
+                wallet.cred_spent += cost
+                wallet.cred_remaining -= cost
+
+                wallet.seg_used += segments
+                wallet.seg_remaining -= segments
+
+            wallet.save(update_fields=[
+                "balance", "cred_spent", "cred_remaining", "seg_used", "seg_remaining"
+            ])
 
             WalletTransaction.objects.create(
                 wallet=wallet,
@@ -77,12 +101,21 @@ class Wallet(models.Model):
         return cost, segments
     
     def refund(self, amount, *, reference_id=None, description="Refund"):
+        """Refund credits back to wallet"""
 
-        amount = Decimal(str(amount)) 
+        amount = Decimal(str(amount))
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+
             wallet.balance += amount
-            wallet.save(update_fields=["balance"])
+            wallet.cred_remaining += amount
+
+            # derive segments from refunded amount
+            segments = int(amount / wallet.outbound_segment_charge)
+            wallet.seg_remaining += segments
+            wallet.seg_used -= segments
+
+            wallet.save(update_fields=["balance", "cred_remaining", "seg_remaining","seg_used"])
 
             WalletTransaction.objects.create(
                 wallet=wallet,
@@ -93,14 +126,39 @@ class Wallet(models.Model):
                 reference_id=reference_id
             )
 
+
     def add_funds(self, amount: float, reference_id=None):
         """Add funds from webhook/payment"""
+        from django.utils import timezone
 
-        amount = Decimal(str(amount)) 
+        amount = Decimal(str(amount))
+        print(f"\n===== Add Funds =====")
+        print(f"Initial amount: {amount}")
+        print(f"Wallet before add: balance={self.balance}, cred_purchased={self.cred_purchased}, "
+            f"cred_remaining={self.cred_remaining}, seg_purchased={self.seg_purchased}, "
+            f"seg_remaining={self.seg_remaining}, outbound_segment_charge={self.outbound_segment_charge}")
+
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+
             wallet.balance += amount
-            wallet.save(update_fields=["balance"])
+            wallet.cred_purchased += amount
+            wallet.cred_remaining += amount
+
+            # derive segments purchased from credits
+            segments = int(amount / wallet.outbound_segment_charge)
+            wallet.seg_purchased += segments
+            wallet.seg_remaining += segments
+
+            print(f"Derived segments from added credits: {segments}")
+            print(f"Wallet after computation: balance={wallet.balance}, cred_purchased={wallet.cred_purchased}, "
+                f"cred_remaining={wallet.cred_remaining}, seg_purchased={wallet.seg_purchased}, "
+                f"seg_remaining={wallet.seg_remaining}")
+
+            wallet.save(update_fields=[
+                "balance", "cred_purchased", "cred_remaining",
+                "seg_purchased", "seg_remaining"
+            ])
 
             WalletTransaction.objects.create(
                 wallet=wallet,
@@ -110,6 +168,12 @@ class Wallet(models.Model):
                 description="Funds added",
                 reference_id=reference_id
             )
+
+            print(f"WalletTransaction created at {timezone.now()} for amount={amount}, balance_after={wallet.balance}")
+
+        print(f"Final Wallet state: balance={wallet.balance}, cred_remaining={wallet.cred_remaining}, "
+            f"seg_remaining={wallet.seg_remaining}\n")
+
 
         # ✅ After funds are added, retry queued SMS (both outbound + inbound)
         from sms_management_app.tasks import process_sms_message
