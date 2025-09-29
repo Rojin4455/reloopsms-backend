@@ -24,8 +24,8 @@ MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"  # your main location
 
 @receiver(post_save, sender=GHLAuthCredentials)
 def sync_wallet_with_ghl(sender, instance, created, **kwargs):
-    if not created:
-        return
+    # if not created:
+    #     return
 
 # def sync_wallet_with_ghl():
 #     instance = GHLAuthCredentials.objects.get(location_id='Yx7Y0yVjvSx8tJ5RZoyG')
