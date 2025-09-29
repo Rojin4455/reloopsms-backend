@@ -48,7 +48,7 @@ from django.conf import settings
 
 MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"
 
-@shared_task
+# @shared_task
 def sync_all_wallets_with_ghl():
     # find the creds for main location
     try:

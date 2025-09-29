@@ -22,16 +22,14 @@ from decimal import Decimal, InvalidOperation
 
 MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"  # your main location
 
-# @receiver(post_save, sender=GHLAuthCredentials)
-# def sync_wallet_with_ghl(sender, instance, created, **kwargs):
-    # if not created:
-    #     return
+@receiver(post_save, sender=GHLAuthCredentials)
+def sync_wallet_with_ghl(sender, instance, created, **kwargs):
+    if not created:
+        return
 
-def sync_wallet_with_ghl():
-
-
-    instance = GHLAuthCredentials.objects.get(location_id='Yx7Y0yVjvSx8tJ5RZoyG')
-    # 1) get main location creds (the integration account that has access to the main custom objects)
+# def sync_wallet_with_ghl():
+#     instance = GHLAuthCredentials.objects.get(location_id='Yx7Y0yVjvSx8tJ5RZoyG')
+#     # 1) get main location creds (the integration account that has access to the main custom objects)
     try:
         main_creds = GHLAuthCredentials.objects.get(location_id=MAIN_LOCATION_ID)
     except GHLAuthCredentials.DoesNotExist:

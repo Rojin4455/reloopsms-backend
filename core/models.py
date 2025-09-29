@@ -42,8 +42,8 @@ class Wallet(models.Model):
     ghl_object_id = models.CharField(max_length=255, blank=True, null=True)
     
     cred_purchased = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    cred_spent = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    cred_remaining = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    cred_spent = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0.00"))
+    cred_remaining = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0.00"))
 
     seg_purchased = models.BigIntegerField(default=0)
     seg_remaining = models.BigIntegerField(default=0)
@@ -216,8 +216,8 @@ class WalletTransaction(models.Model):
     wallet = models.ForeignKey("Wallet", on_delete=models.CASCADE, related_name="transactions")
 
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    balance_after = models.DecimalField(max_digits=10, decimal_places=2)  # snapshot of balance
+    amount = models.DecimalField(max_digits=10, decimal_places=3)
+    balance_after = models.DecimalField(max_digits=10, decimal_places=3)  # snapshot of balance
 
     description = models.TextField(null=True, blank=True)  # e.g. "Charged for outbound SMS", "Payment via Stripe"
     reference_id = models.CharField(max_length=255, null=True, blank=True)  # payment gateway txn ID or sms ID
