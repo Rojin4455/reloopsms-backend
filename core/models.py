@@ -41,7 +41,7 @@ class Wallet(models.Model):
 
     ghl_object_id = models.CharField(max_length=255, blank=True, null=True)
     
-    cred_purchased = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    cred_purchased = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0.00"))
     cred_spent = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0.00"))
     cred_remaining = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0.00"))
 
