@@ -77,24 +77,24 @@ def format_international(number, default_country_code="61"):
 
 
 
-from sms_management_app.services import TransmitSMSService
+# from sms_management_app.services import TransmitSMSService
 
-def test_find_existing_account(name=None, email=None, phone=None):
-    """
-    Test function for finding an existing TransmitSMS account
-    by name, email, or phone.
-    """
-    service = TransmitSMSService()
-    result = service.find_existing_account(
-        email=email,
-        phone=phone,
-        name=name
-    )
+# def test_find_existing_account(name=None, email=None, phone=None):
+#     """
+#     Test function for finding an existing TransmitSMS account
+#     by name, email, or phone.
+#     """
+#     service = TransmitSMSService()
+#     result = service.find_existing_account(
+#         email=email,
+#         phone=phone,
+#         name=name
+#     )
     
-    if result:
-        print("[SUCCESS] Found account:")
-        print(result)
-    else:
-        print("[INFO] No matching account found.")
+#     if result:
+#         print("[SUCCESS] Found account:")
+#         print(result)
+#     else:
+#         print("[INFO] No matching account found.")
     
-    return result
+#     return result
