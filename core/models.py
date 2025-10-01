@@ -129,6 +129,8 @@ class Wallet(models.Model):
 
     def add_funds(self, amount: float, reference_id=None):
         """Add funds from webhook/payment"""
+
+        
         from django.utils import timezone
 
         amount = Decimal(str(amount))

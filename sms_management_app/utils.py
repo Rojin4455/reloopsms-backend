@@ -90,6 +90,8 @@ def format_international(number, default_country_code="61"):
 #         phone=phone,
 #         name=name
 #     )
+
+
     
 #     if result:
 #         print("[SUCCESS] Found account:")
@@ -98,3 +100,41 @@ def format_international(number, default_country_code="61"):
 #         print("[INFO] No matching account found.")
     
 #     return result
+
+
+# def test_update_existing_account(client_id=None, email=None, phone=None, client_pays=None):
+#     service = TransmitSMSService()
+
+
+#     result = service.update_subaccount(
+#         client_pays=client_pays,
+#         client_id=client_id
+#     )
+    
+#     if result:
+#         print("[SUCCESS] Found account:")
+#         print(result)
+#     else:
+#         print("[INFO] No matching account found.")
+    
+#     return result
+
+
+
+# def get_all_numbers_account(client_id=None, email=None, phone=None, client_pays=None):
+#     service = TransmitSMSService()
+
+
+#     result = service.get_numbers()
+    
+#     if result:
+#         print("[SUCCESS] Found account:")
+#         print(result)
+#     else:
+#         print("[INFO] No matching account found.")
+    
+#     return result
+
+
+
+

@@ -21,6 +21,72 @@ class TransmitSMSService:
         secret = api_secret or self.agency_api_secret
         credentials = base64.b64encode(f"{key}:{secret}".encode()).decode()
         return {"Authorization": f"Basic {credentials}"}
+    
+
+    def get_numbers(self, page=1, page_size=100, api_key=None, api_secret=None):
+        """
+        Fetch all numbers from TransmitSMS
+        API docs: https://api.transmitsms.com/get-numbers.json
+        """
+        url = f"{self.base_url}/get-numbers.json"
+        headers = self._get_auth_header()
+        params = {
+            "page": page,
+            "max": page_size
+        }
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()  # will raise error for non-200 responses
+        return response.json()
+    
+
+    def update_subaccount(self, client_id, name=None, email=None, phone=None, password=None, client_pays=None):
+        """
+        Update an existing subaccount in TransmitSMS.
+        Only provide the fields you want to update.
+        """
+        url = f"{self.base_url}/edit-client.json"
+        headers = self._get_auth_header()
+        
+        # Prepare payload
+        data = {'client_id': client_id}
+        if name:
+            data['name'] = name
+
+        if client_pays:
+            data["client_pays"] = client_pays
+        if email:
+            data['email'] = email
+        if phone:
+            data['msisdn'] = phone
+        if password:
+            data['password'] = password
+
+        print(f"[INFO] Updating subaccount {client_id}")
+        print(f"[DEBUG] Request URL: {url}")
+        print(f"[DEBUG] Request Headers: {headers}")
+        print(f"[DEBUG] Request Data: {data}")
+
+        try:
+            response = requests.post(url, data=data, headers=headers)
+            print(f"[INFO] Response Status Code: {response.status_code}")
+            print(f"[DEBUG] Raw Response: {response.text}")
+
+            response.raise_for_status()
+            result = response.json()
+            print(f"[DEBUG] Parsed Response JSON: {result}")
+
+            if result.get('error', {}).get('code') == 'SUCCESS':
+                print(f"[SUCCESS] Subaccount updated successfully for client_id {client_id}")
+                return {'success': True, 'data': result}
+            else:
+                print(f"[ERROR] Failed to update subaccount: {result.get('error', {}).get('description', 'Unknown error')}")
+                return {'success': False, 'error': result.get('error', {}).get('description', 'Unknown error')}
+                
+        except requests.exceptions.RequestException as e:
+            print(f"[EXCEPTION] API request failed: {str(e)}")
+            return {'success': False, 'error': f"API request failed: {str(e)}"}
+        
+        
 
     def create_subaccount(self, name, email, phone, password):
         """Create a new subaccount in TransmitSMS"""
@@ -32,7 +98,7 @@ class TransmitSMSService:
             'email': email,
             'msisdn': phone,
             'password': password,
-            'client_pays':False,
+            'client_pays':"false",
         }
 
         print(f"[INFO] Creating subaccount for {name} ({email})")
