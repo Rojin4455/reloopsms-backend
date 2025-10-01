@@ -24,6 +24,8 @@ urlpatterns = [
     path("dashboard/analytics/", DashboardAnalyticsView.as_view(), name="dashboard-analytics"),
 
     path("ghl-account/dashboard/", GHLAccountDashboardAPIView.as_view(), name="ghl-dashboard"),
+    path("dashboard/", GHLAccountDashboardAPIView.as_view(), name="ghl-dashboard"),
+
     path("ghl-account/messages/", GHLAccountMessagesAPIView.as_view(), name="ghl-messages"),
     path("ghl-account/transactions/", GHLAccountTransactionsAPIView.as_view(), name="ghl-transactions"),
 ]
