@@ -77,7 +77,22 @@ def format_international(number, default_country_code="61"):
 
 
 
-# from sms_management_app.services import TransmitSMSService
+from sms_management_app.services import TransmitSMSService
+
+from transmitsms.models import TransmitSMSAccount
+
+def get_numbers(account_id = None, filter_type=None):
+
+    service = TransmitSMSService()
+
+    if account_id:
+        transmit_sms = TransmitSMSAccount.objects.get(account_id=account_id)
+        available_numbers = service.get_dedicated_numbers(filter_type,api_key=transmit_sms.api_key, api_secret=transmit_sms.api_secret)
+
+    else:
+        available_numbers = service.get_dedicated_numbers(filter_type)
+    print("numbers:",available_numbers)
+
 
 # def test_find_existing_account(name=None, email=None, phone=None):
 #     """

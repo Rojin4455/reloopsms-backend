@@ -24,8 +24,10 @@ MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"  # your main location
 
 @receiver(post_save, sender=GHLAuthCredentials)
 def sync_wallet_with_ghl(sender, instance, created, **kwargs):
-    # if not created:
-    #     return
+    if not created:
+        return
+    
+
 
 # def sync_wallet_with_ghl():
 #     instance = GHLAuthCredentials.objects.get(location_id='Yx7Y0yVjvSx8tJ5RZoyG')
@@ -260,3 +262,48 @@ def format_for_ghl(vals: dict) -> dict:
             properties[key] = float(value) if isinstance(value, Decimal) else value
 
     return properties
+
+
+
+import requests
+def create_custom_menu_link(instance):
+    try:
+        # Prepare the API URL and headers
+        url = "https://services.leadconnectorhq.com/custom-menus/"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {instance.access_token}"
+        }
+
+        # Payload for creating the custom menu
+        payload = {
+            "title": "Custom Menu",
+            "url": f"https://channels.reloop.pro/user/dashboard?locationId={instance.location_id}",
+            "icon": {
+                "name": "yin-yang",
+                "fontFamily": "fab"
+            },
+            "showOnCompany": True,
+            "showOnLocation": True,
+            "showToAllLocations": True,
+            "openMode": "iframe",
+            "locations": [
+                instance.location_id
+            ],
+            "userRole": "all",
+            "allowCamera": False,
+            "allowMicrophone": False
+        }
+
+        # Make the POST request
+        response = requests.post(url, json=payload, headers=headers)
+
+        # Optional: check for errors
+        if response.status_code in (200, 201):
+            print("Custom menu created successfully.")
+        else:
+            print(f"Failed to create custom menu: {response.status_code} - {response.text}")
+
+    except Exception as e:
+        print(f"Error creating custom menu: {str(e)}")

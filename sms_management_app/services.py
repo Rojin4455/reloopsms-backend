@@ -234,6 +234,95 @@ class TransmitSMSService:
             print("❌ SMS sending failed:", result)
 
         return result
+    
+
+
+    def get_dedicated_numbers(self, filter_type="owned", page=1, max_results=100, api_key=None, api_secret=None):
+        """
+        Get list of dedicated virtual numbers from TransmitSMS.
+        API docs: https://api.transmitsms.com/get-numbers.json
+
+        Parameters:
+            filter_type: 'owned' (default) or 'available'
+            page: page number for pagination
+            max_results: max results per page
+        """
+        url = f"{self.base_url}/get-numbers.json"
+        headers = self._get_auth_header(api_key, api_secret)
+
+        params = {
+            "filter": filter_type,  # 'owned' or 'available'
+            "page": page,
+            "max": max_results
+        }
+
+        print(f"[INFO] Fetching {filter_type} numbers (page {page})")
+        print(f"[DEBUG] Request URL: {url}")
+        print(f"[DEBUG] Request Params: {params}")
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            print(f"[INFO] Response Status Code: {response.status_code}")
+            print(f"[DEBUG] Raw Response: {response.text}")
+
+            response.raise_for_status()
+            result = response.json()
+            print(f"[DEBUG] Parsed Response JSON: {result}")
+
+            if result.get('error', {}).get('code') == 'SUCCESS':
+                print(f"[SUCCESS] Retrieved {len(result.get('numbers', []))} numbers successfully")
+                return {'success': True, 'data': result}
+            else:
+                print(f"[ERROR] Failed to fetch numbers: {result.get('error', {}).get('description', 'Unknown error')}")
+                return {'success': False, 'error': result.get('error', {}).get('description', 'Unknown error')}
+
+        except requests.exceptions.RequestException as e:
+            print(f"[EXCEPTION] API request failed: {str(e)}")
+            return {'success': False, 'error': f"API request failed: {str(e)}"}
+    
+
+    def lease_number(self, number=None, forward_url=None, api_key=None, api_secret=None):
+        """
+        Lease (purchase) a dedicated virtual number.
+        API docs: https://api.transmitsms.com/lease-number.json
+
+        Parameters:
+            number: specific number to lease (optional)
+            forward_url: optional callback URL for incoming messages
+        """
+        url = f"{self.base_url}/lease-number.json"
+        headers = self._get_auth_header(api_key, api_secret)
+
+        data = {}
+        if number:
+            data["number"] = number
+        if forward_url:
+            data["forward_url"] = forward_url
+
+        print(f"[INFO] Leasing number: {number or 'random available'}")
+        print(f"[DEBUG] Request URL: {url}")
+        print(f"[DEBUG] Request Data: {data}")
+
+        try:
+            response = requests.post(url, data=data, headers=headers)
+            print(f"[INFO] Response Status Code: {response.status_code}")
+            print(f"[DEBUG] Raw Response: {response.text}")
+
+            response.raise_for_status()
+            result = response.json()
+            print(f"[DEBUG] Parsed Response JSON: {result}")
+
+            if result.get('error', {}).get('code') == 'SUCCESS':
+                print(f"[SUCCESS] Number leased successfully: {result.get('number', {}).get('number', 'N/A')}")
+                return {'success': True, 'data': result}
+            else:
+                print(f"[ERROR] Failed to lease number: {result.get('error', {}).get('description', 'Unknown error')}")
+                return {'success': False, 'error': result.get('error', {}).get('description', 'Unknown error')}
+
+        except requests.exceptions.RequestException as e:
+            print(f"[EXCEPTION] API request failed: {str(e)}")
+            return {'success': False, 'error': f"API request failed: {str(e)}"}
+
 
 
 
