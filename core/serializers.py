@@ -123,6 +123,7 @@ class WalletListingSerializer(serializers.ModelSerializer):
     account_user_id = serializers.CharField(source="account.user_id", read_only=True)
     company_id = serializers.CharField(source="account.company_id", read_only=True)
     location_name = serializers.CharField(source="account.location_name", read_only=True)
+    location_id = serializers.CharField(source="account.location_id", read_only=True)
     transactions = serializers.SerializerMethodField()
     total_transactions = serializers.SerializerMethodField()
 
@@ -133,6 +134,7 @@ class WalletListingSerializer(serializers.ModelSerializer):
             "account_user_id",
             "company_id",
             "location_name",
+            "location_id",
             "balance",
             "inbound_segment_charge",
             "outbound_segment_charge",
