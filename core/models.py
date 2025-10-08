@@ -165,9 +165,13 @@ class Wallet(models.Model):
             wallet.cred_remaining += amount
 
             # derive segments purchased from credits
-            segments = int(amount / wallet.outbound_segment_charge)
+            if wallet.outbound_segment_charge:
+                segments = int(amount / wallet.outbound_segment_charge)
+            else:
+                segments=0
             wallet.seg_purchased += segments
             wallet.seg_remaining += segments
+            
 
             print(f"Derived segments from added credits: {segments}")
             print(f"Wallet after computation: balance={wallet.balance}, cred_purchased={wallet.cred_purchased}, "
