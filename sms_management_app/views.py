@@ -372,6 +372,7 @@ def wallet_adjust_funds(request, location_id):
         # ✅ Perform action
         if action == "gift":
             new_balance = wallet.add_funds(amount, reference_id=reference_id, gift=True)
+            new_balance = wallet.balance
             message = "Gifted funds added successfully"
 
         elif action == "take":
