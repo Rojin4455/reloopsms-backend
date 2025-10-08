@@ -246,7 +246,10 @@ class Wallet(models.Model):
             wallet.cred_remaining -= amount
 
             # derive segments removed based on segment charge
-            segments = int(amount / wallet.outbound_segment_charge)
+            if wallet.outbound_segment_charge:
+                segments = int(amount / wallet.outbound_segment_charge)
+            else:
+                segments=0
             wallet.seg_remaining = max(wallet.seg_remaining - segments, 0)
 
             wallet.save(update_fields=["balance", "cred_remaining", "seg_remaining"])
