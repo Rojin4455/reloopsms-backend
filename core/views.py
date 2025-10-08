@@ -75,7 +75,7 @@ def callback(request):
     if not code:
         return JsonResponse({"error": "Authorization code not received from OAuth"}, status=400)
 
-    return redirect(f'{config("BASE_URI")}/api/core/auth/agency-tokens?code={code}')
+    return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?code={code}')
 
 
 
