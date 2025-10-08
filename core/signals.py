@@ -27,6 +27,8 @@ def sync_wallet_with_ghl(sender, instance, created, **kwargs):
     if not created:
         return
     
+    create_custom_menu_link(instance.location_id)
+    
 
 
 # def sync_wallet_with_ghl():
