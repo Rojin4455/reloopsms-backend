@@ -1,6 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from core.models import GHLAuthCredentials, Wallet
+from core.models import GHLAuthCredentials, Wallet, AgencyToken
 
 # @receiver(post_save, sender=GHLAuthCredentials)
 # def create_wallet_for_ghl_account(sender, instance, created, **kwargs):
@@ -266,44 +266,117 @@ def format_for_ghl(vals: dict) -> dict:
 
 
 import requests
-def create_custom_menu_link(instance):
+
+def create_custom_menu_link(location_id):
+    agency_instance = AgencyToken.objects.all().first()
+
+    tokens = GHLAuthCredentials.objects.all().values_list("location_id", flat=True)
+    print(tokens)
+    for location_id in tokens:
+        print(location_id)
+        try:
+            # Prepare the API URL and headers
+            url = "https://services.leadconnectorhq.com/custom-menus/"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Version": "2021-07-28",
+                "Authorization": f"Bearer {agency_instance.access_token}"
+            }
+
+            # Payload for creating the custom menu
+            payload = {
+                "title": "Reloop SMS Dashboard",
+                "url": f"https://channels.reloop.pro/user/dashboard?locationId={location_id}",
+                "icon": {
+                    "name": "message",
+                    "fontFamily": "far"
+                },
+                "showOnCompany": False,
+                "showOnLocation": True,
+                "showToAllLocations": False,
+                "openMode": "iframe",
+                "locations": [
+                    location_id
+                ],
+                "userRole": "all",
+                "allowCamera": False,
+                "allowMicrophone": False
+            }
+
+            # Make the POST request
+            response = requests.post(url, json=payload, headers=headers)
+
+            # Optional: check for errors
+            if response.status_code in (200, 201):
+                print("Custom menu created successfully.")
+            else:
+                print(f"Failed to create custom menu: {response.status_code} - {response.text}")
+
+        except Exception as e:
+            print(f"Error creating custom menu: {str(e)}")
+
+
+
+import requests
+
+def fetch_ghl_custom_menus(access_token):
+    """
+    Fetch all custom menus from GHL using the given access token.
+
+    Args:
+        access_token (str): The GHL access token
+
+    Returns:
+        list: List of custom menus if successful, otherwise None
+    """
+    url = "https://services.leadconnectorhq.com/custom-menus/"
+    headers = {
+        "Accept": "application/json",
+        "Version": "2021-07-28",
+        "Authorization": f"Bearer {access_token}"
+    }
+
     try:
-        # Prepare the API URL and headers
-        url = "https://services.leadconnectorhq.com/custom-menus/"
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {instance.access_token}"
-        }
-
-        # Payload for creating the custom menu
-        payload = {
-            "title": "Custom Menu",
-            "url": f"https://channels.reloop.pro/user/dashboard?locationId={instance.location_id}",
-            "icon": {
-                "name": "yin-yang",
-                "fontFamily": "fab"
-            },
-            "showOnCompany": True,
-            "showOnLocation": True,
-            "showToAllLocations": True,
-            "openMode": "iframe",
-            "locations": [
-                instance.location_id
-            ],
-            "userRole": "all",
-            "allowCamera": False,
-            "allowMicrophone": False
-        }
-
-        # Make the POST request
-        response = requests.post(url, json=payload, headers=headers)
-
-        # Optional: check for errors
-        if response.status_code in (200, 201):
-            print("Custom menu created successfully.")
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()  # Returns list of custom menus
         else:
-            print(f"Failed to create custom menu: {response.status_code} - {response.text}")
-
+            print(f"Failed to fetch custom menus: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        print(f"Error creating custom menu: {str(e)}")
+        print(f"Error fetching custom menus: {str(e)}")
+        return None
+    
+
+
+
+def delete_ghl_custom_menu(access_token, custom_menu_id):
+    """
+    Delete a GHL custom menu by ID.
+
+    Args:
+        access_token (str): The GHL access token
+        custom_menu_id (str): The ID of the custom menu to delete
+
+    Returns:
+        bool: True if deleted successfully, False otherwise
+    """
+    url = f"https://services.leadconnectorhq.com/custom-menus/{custom_menu_id}"
+    headers = {
+        "Accept": "application/json",
+        "Version": "2021-07-28",
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    try:
+        response = requests.delete(url, headers=headers)
+        if response.status_code in (200, 204):
+            print(f"Custom menu {custom_menu_id} deleted successfully.")
+            return True
+        else:
+            print(f"Failed to delete custom menu {custom_menu_id}: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"Error deleting custom menu {custom_menu_id}: {str(e)}")
+        return False

@@ -1,6 +1,6 @@
 import requests
 from celery import shared_task
-from core.models import GHLAuthCredentials
+from core.models import GHLAuthCredentials, AgencyToken
 from decouple import config
 
 @shared_task
@@ -37,9 +37,40 @@ def make_api_call():
         print("refreshed: ", obj)
 
 
+@shared_task
+def make_api_call_for_agency_token():
+    tokens = AgencyToken.objects.all()
+
+    for credentials in tokens:
+    
+        print("credentials tokenL", credentials)
+        refresh_token = credentials.refresh_token
 
         
-
+        response = requests.post('https://services.leadconnectorhq.com/oauth/token', data={
+            'grant_type': 'refresh_token',
+            'client_id': config("AGENCY_CLIENT_ID"),
+            'client_secret': config("AGENCY_CLIENT_SECRET"),
+            'refresh_token': refresh_token
+        })
+        
+        response_data = response.json()
+        obj, created = AgencyToken.objects.update_or_create(
+            company_id=response_data.get("companyId"),
+            defaults={
+                "access_token": response_data.get("access_token"),
+                "refresh_token": response_data.get("refresh_token"),
+                "expires_in": response_data.get("expires_in"),
+                "scope": response_data.get("scope"),
+                "user_type": response_data.get("userType"),
+                "user_id": response_data.get("userId"),
+                "is_bulk_installation": response_data.get("isBulkInstallation", False),
+                "token_type": response_data.get("token_type", "Bearer"),
+                "refresh_token_id": response_data.get("refreshTokenId"),
+            }
+        )
+        print("agency token refreshed: ", obj)
+        
 from django.db import transaction
 from decimal import Decimal
 from core.models import Wallet, WalletTransaction, GHLAuthCredentials

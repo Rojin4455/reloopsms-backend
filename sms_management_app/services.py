@@ -164,22 +164,56 @@ class TransmitSMSService:
             if name and client.get('name') == name:
                 return client
         return None
-    def send_sms(self, message, to_number, from_number, transmit_account, 
-            dlr_callback=None, reply_callback=None, **kwargs):
-        """Send SMS via TransmitSMS API with fallback if caller ID is invalid."""
+    def send_sms(
+        self, message, to_number, from_number, transmit_account,
+        dlr_callback=None, reply_callback=None, sms_message=None, **kwargs
+    ):
+        """Send SMS via TransmitSMS API — uses dedicated number if available."""
         url = f"{self.base_url}/send-sms.json"
         headers = self._get_auth_header(
             transmit_account.api_key,
             transmit_account.api_secret
         )
 
-        # Format numbers
-        print("from number: before ", from_number)
-        print("to number: before; ", to_number)
+        # STEP 1: Try to fetch dedicated numbers for the account
+        dedicated_number = None
+        try:
+            dedicated_response = self.get_dedicated_numbers(
+                filter_type="owned",
+                api_key=transmit_account.api_key,
+                api_secret=transmit_account.api_secret
+            )
+
+            print(f"[DEBUG] Dedicated number API response: {dedicated_response}")
+
+            if dedicated_response.get("success"):
+                data = dedicated_response.get("data", {})
+                numbers = data.get("numbers", [])
+                if isinstance(numbers, list) and len(numbers) > 0:
+                    dedicated_number = numbers[0].get("number")
+                    print(f"[INFO] Using dedicated number: {dedicated_number}")
+                else:
+                    print("[INFO] No dedicated number found for this account.")
+            else:
+                print(f"[WARNING] Failed to fetch dedicated numbers: {dedicated_response.get('error')}")
+        except Exception as e:
+            print(f"[EXCEPTION] Could not fetch dedicated number: {str(e)}")
+
+        # STEP 2: Use dedicated number if available
+        if dedicated_number:
+            from_number = dedicated_number
+            sms_message.from_number=from_number
+        else:
+            sms_message.from_number="Shared Number"
+        sms_message.save()
+
+        # STEP 3: Format numbers
+        print("from number (before):", from_number)
+        print("to number (before):", to_number)
         to_number = format_international(to_number)
         from_number = format_international(from_number)
-        print("from number: ", from_number)
-        print("to number: ", to_number)
+        print("from number (after):", from_number)
+        print("to number (after):", to_number)
 
         def _make_request(payload):
             """Helper to send POST request"""
@@ -208,6 +242,7 @@ class TransmitSMSService:
             'to': to_number,
             'from': from_number,
         }
+        
         if dlr_callback:
             data['dlr_callback'] = dlr_callback
         if reply_callback:
@@ -456,13 +491,14 @@ class GHLIntegrationService:
 
             # Send SMS via TransmitSMS
             print("📤 Sending SMS via TransmitSMS...")
-            result = self.transmit_service.send_sms(
+            result = self.transmit_service.send_sms(               
                 message=message_content,
                 to_number=to_number,
                 from_number=transmit_account.phone_number,
                 transmit_account=transmit_account,
                 dlr_callback=dlr_callback,
-                reply_callback=reply_callback
+                reply_callback=reply_callback,
+                sms_message=sms_message,
             )
             print("📩 TransmitSMS response:", result)
 
@@ -513,6 +549,7 @@ class GHLIntegrationService:
                 transmit_account=transmit_account,
                 dlr_callback=dlr_callback,
                 reply_callback=reply_callback,
+                sms_message=sms_message
             )
 
             if result["success"]:

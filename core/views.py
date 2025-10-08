@@ -40,6 +40,14 @@ FRONTEND_URL = config("FRONTEND_URL")
 TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token"
 SCOPE = config("SCOPE")
 
+
+
+AGENCY_CLIENT_ID = config("AGENCY_CLIENT_ID")
+AGENCY_CLIENT_SECRET = config("AGENCY_CLIENT_SECRET")
+AGENCY_REDIRECT_URI = config("AGENCY_REDIRECT_URI")
+AGENCY_SCOPE = config("AGENCY_SCOPE")
+
+
 def auth_connect(request):
     auth_url = ("https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&"
                 f"redirect_uri={GHL_REDIRECTED_URI}&"
@@ -49,6 +57,16 @@ def auth_connect(request):
     return redirect(auth_url)
 
 
+def agency_auth_connect(request):
+    auth_url = (
+        "https://marketplace.gohighlevel.com/oauth/chooselocation?"
+        f"response_type=code&"
+        f"redirect_uri={AGENCY_REDIRECT_URI}&"
+        f"client_id={AGENCY_CLIENT_ID}&"
+        f"scope={AGENCY_SCOPE}"
+    )
+    return redirect(auth_url)
+
 
 def callback(request):
     
@@ -57,7 +75,18 @@ def callback(request):
     if not code:
         return JsonResponse({"error": "Authorization code not received from OAuth"}, status=400)
 
-    return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?code={code}')
+    return redirect(f'{config("BASE_URI")}/api/core/auth/agency-tokens?code={code}')
+
+
+
+def agency_callback(request):
+    
+    code = request.GET.get('code')
+
+    if not code:
+        return JsonResponse({"error": "Authorization code not received from OAuth"}, status=400)
+
+    return redirect(f'{config("BASE_URI")}/api/core/auth/agency-tokens?code={code}')
 
 
 
@@ -69,7 +98,7 @@ from django.utils.decorators import method_decorator
 from django.views import View
 import json
 from sms_management_app.services import GHLIntegrationService, TransmitSMSService
-from core.models import GHLAuthCredentials
+from core.models import GHLAuthCredentials, AgencyToken
 from django.utils import timezone
 from sms_management_app.utils import format_password
 
@@ -148,6 +177,64 @@ def tokens(request):
         return redirect(frontend_url)
     
 
+
+
+def agency_tokens(request):
+    authorization_code = request.GET.get("code")
+
+    if not authorization_code:
+        return JsonResponse({"error": "Authorization code not found"}, status=400)
+
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": AGENCY_CLIENT_ID,
+        "client_secret": AGENCY_CLIENT_SECRET,
+        "redirect_uri": AGENCY_REDIRECT_URI,
+        "code": authorization_code,
+    }
+
+    
+
+    response = requests.post(TOKEN_URL, data=data)
+
+    try:
+        response_data = response.json()
+        print("response_data",response_data)
+        if not response_data or not response_data.get("access_token"):
+            return render(request, 'onboard.html', context={
+                "message": "Invalid token response from API",
+                "status_code": response.status_code,
+                "response_text": response.text[:400],
+            }, status=400)
+
+        # Save or update agency token
+        obj, created = AgencyToken.objects.update_or_create(
+            company_id=response_data.get("companyId"),
+            defaults={
+                "access_token": response_data.get("access_token"),
+                "refresh_token": response_data.get("refresh_token"),
+                "expires_in": response_data.get("expires_in"),
+                "scope": response_data.get("scope"),
+                "user_type": response_data.get("userType"),
+                "user_id": response_data.get("userId"),
+                "is_bulk_installation": response_data.get("isBulkInstallation", False),
+                "token_type": response_data.get("token_type", "Bearer"),
+                "refresh_token_id": response_data.get("refreshTokenId"),
+            }
+        )
+
+        print(f"✅ Agency token saved for company {obj.company_id}")
+
+        # Redirect to frontend success page
+        query_params = urlencode({
+            "companyId": obj.company_id,
+            "userId": obj.user_id
+        })
+        frontend_url = f"{FRONTEND_URL}/agency-accounts?{query_params}"
+        return redirect(frontend_url)
+
+    except requests.exceptions.JSONDecodeError:
+        return redirect(f"{FRONTEND_URL}/admin/error-onboard")
 
 
 @method_decorator(csrf_exempt, name='dispatch')

@@ -7,6 +7,23 @@ from decimal import Decimal
 
 # Create your models here.
 
+
+class AgencyToken(models.Model):
+    access_token = models.TextField()
+    token_type = models.CharField(max_length=50, default='Bearer')
+    expires_in = models.PositiveIntegerField(default=86399)
+    refresh_token = models.TextField()
+    scope = models.CharField(max_length=255, blank=True, null=True)
+    refresh_token_id = models.CharField(max_length=128, blank=True, null=True)
+    user_type = models.CharField(max_length=50, default='Company')
+    company_id = models.CharField(max_length=128, db_index=True)
+    is_bulk_installation = models.BooleanField(default=False)
+    user_id = models.CharField(max_length=128, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class GHLAuthCredentials(models.Model):
     user_id = models.CharField(max_length=255)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

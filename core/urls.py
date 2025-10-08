@@ -20,6 +20,10 @@ urlpatterns = [
     path("auth/tokens/", tokens, name="oauth_tokens"),
     path("auth/callback", callback, name="oauth_callback"),
 
+    path("auth/agency-connect/", agency_auth_connect, name="oauth_connect"),
+    path("auth/agency-tokens/", agency_tokens, name="oauth_tokens"),
+    path("auth/agency-callback", agency_callback, name="oauth_callback"),
+
 
     path('login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
