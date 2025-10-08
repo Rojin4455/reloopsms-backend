@@ -60,7 +60,7 @@ class SMSMessage(models.Model):
     delivery_status = models.TextField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
 
-    cost = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    cost = models.DecimalField(max_digits=8, decimal_places=3, default=0)
     segments = models.PositiveIntegerField(default=1)
     
     # Timestamps

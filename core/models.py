@@ -144,7 +144,7 @@ class Wallet(models.Model):
             )
 
 
-    def add_funds(self, amount: float, reference_id=None):
+    def add_funds(self, amount: float, reference_id=None, gift=None):
         """Add funds from webhook/payment"""
 
         
@@ -184,7 +184,7 @@ class Wallet(models.Model):
                 transaction_type="credit",
                 amount=amount,
                 balance_after=wallet.balance,
-                description="Funds added",
+                description="Gifted Funds" if gift else "Funds added",
                 reference_id=reference_id
             )
 
@@ -224,6 +224,41 @@ class Wallet(models.Model):
                 process_sms_message.delay(str(sms.id))
 
         return self.balance
+    
+
+
+    def deduct_funds(self, amount: float, reference_id=None, description="Funds deducted"):
+        """Deduct funds from the wallet (used for taking or adjusting funds)."""
+        from django.utils import timezone
+        amount = Decimal(str(amount))
+
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+
+            if wallet.balance < amount:
+                raise ValidationError("Insufficient balance to deduct funds.")
+
+            wallet.balance -= amount
+            wallet.cred_remaining -= amount
+
+            # derive segments removed based on segment charge
+            segments = int(amount / wallet.outbound_segment_charge)
+            wallet.seg_remaining = max(wallet.seg_remaining - segments, 0)
+
+            wallet.save(update_fields=["balance", "cred_remaining", "seg_remaining"])
+
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                transaction_type="debit",
+                amount=amount,
+                balance_after=wallet.balance,
+                description=description,
+                reference_id=reference_id
+            )
+
+            print(f"💸 Funds deducted: {amount}, balance now {wallet.balance} at {timezone.now()}")
+
+        return wallet.balance
     
 class WalletTransaction(models.Model):
     TRANSACTION_TYPES = (

@@ -338,38 +338,59 @@ from decimal import Decimal
 
 @csrf_exempt
 @require_http_methods(["POST"])
-def wallet_add_funds(request, location_id):
+def wallet_adjust_funds(request, location_id):
     """
-    Webhook endpoint to add funds to a wallet linked to a GHL account.
-    URL: /wallet/<location_id>/add-funds/
-    Expected JSON body: { "amount": 50.00, "reference_id": "txn_123" }
+    Webhook endpoint to gift or take funds from a wallet.
+    URL: /wallet/<location_id>/adjust-funds/
+    Expected JSON body:
+      {
+        "action": "gift" | "take" | "add",
+        "amount": 50.00,
+        "reference_id": "txn_123"
+      }
     """
     try:
         data = json.loads(request.body.decode("utf-8"))
+        action = data.get("action")
         amount = Decimal(str(data.get("amount", 0)))
         reference_id = data.get("reference_id")
+
+        if not action or action not in ["gift", "take", "add"]:
+            return JsonResponse({"error": "Invalid or missing action"}, status=400)
 
         if amount <= 0:
             return JsonResponse({"error": "Invalid amount"}, status=400)
 
+        # ✅ Get wallet
         try:
             account = GHLAuthCredentials.objects.get(location_id=location_id)
         except GHLAuthCredentials.DoesNotExist:
             return JsonResponse({"error": "GHL account not found"}, status=404)
 
-        # ✅ Ensure wallet exists (create if missing)
-        wallet, created = Wallet.objects.get_or_create(account=account)
+        wallet, _ = Wallet.objects.get_or_create(account=account)
 
-        new_balance = wallet.add_funds(amount, reference_id=reference_id)
-        
+        # ✅ Perform action
+        if action == "gift":
+            new_balance = wallet.add_funds(amount, reference_id=reference_id, gift=True)
+            message = "Gifted funds added successfully"
+
+        elif action == "take":
+            new_balance = wallet.deduct_funds(amount, description="Funds deducted by admin")
+            message = "Funds deducted successfully"
+
+        else:  # action == "add"
+            new_balance = wallet.add_funds(amount)
+            message = "Funds added successfully"
+
         return JsonResponse({
-            "message": "Funds added successfully",
+            "message": message,
+            "action": action,
             "location_id": location_id,
-            "amount_added": str(amount),
+            "amount": str(amount),
             "new_balance": str(new_balance),
             "reference_id": reference_id,
-            "wallet_created": created,  # True if a new wallet was made
         })
+
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
     
@@ -383,6 +404,7 @@ class DashboardAnalyticsView(APIView):
         # Get query params
         days = int(request.query_params.get('days', 30))
         account_id = request.query_params.get('account_id')
+        account_name = request.query_params.get('account_name')
         
         # Date filtering
         end_date = timezone.now()
@@ -406,6 +428,13 @@ class DashboardAnalyticsView(APIView):
             wallets_qs = wallets_qs.filter(account__location_id=account_id)
             accounts_qs = accounts_qs.filter(location_id=account_id)
             transactions_qs = transactions_qs.filter(wallet__account__location_id=account_id)
+
+        if account_name:
+            messages_qs = messages_qs.filter(ghl_account__location_name__icontains=account_name)
+            wallets_qs = wallets_qs.filter(account__location_name__icontains=account_name)
+            accounts_qs = accounts_qs.filter(location_name__icontains=account_name)
+            transactions_qs = transactions_qs.filter(wallet__account__location_name__icontains=account_name)
+
         
         # Calculate SMS stats
         total_messages = messages_qs.count()
