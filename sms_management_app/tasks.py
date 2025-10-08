@@ -243,7 +243,7 @@ def process_sms_message(self, sms_id: str):
             "type": "SMS",
             "message": sms.message_content,
             "conversationId": sms.ghl_conversation_id,
-            "conversationProviderId": "68a3329cdef552743af9de53", #conversationProvidedId
+            "conversationProviderId": "68dbda8a5f1dda4f65d4625f", #conversationProvidedId
         }
         headers = {
             "Authorization": f"Bearer {sms.ghl_account.access_token}",
