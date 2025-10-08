@@ -106,6 +106,10 @@ def sync_all_wallets_with_ghl():
                         "currency": "default",
                         "value": float(wallet.cred_spent)
                     },
+                    "seg_rates": {
+                        "currency": "default",
+                        "value": float(wallet.outbound_segment_charge)
+                    },
                     "seg_used": int(wallet.seg_used),
                 }                
                 service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
