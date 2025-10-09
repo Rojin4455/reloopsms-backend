@@ -27,7 +27,7 @@ def sync_wallet_with_ghl(sender, instance, created, **kwargs):
     if not created:
         return
     
-    create_custom_menu_link(instance.location_id)
+    update_custom_menu_link()
     
 
 
@@ -269,55 +269,76 @@ def format_for_ghl(vals: dict) -> dict:
 
 import requests
 
-def create_custom_menu_link(location_id):
+
+
+# 3764931e-b906-4b23-a543-6d5ec3fa6f20
+
+
+def update_custom_menu_link():
     agency_instance = AgencyToken.objects.all().first()
-
     tokens = GHLAuthCredentials.objects.all().values_list("location_id", flat=True)
-    print(tokens)
+    
+    menu_id = "3764931e-b906-4b23-a543-6d5ec3fa6f20"
+    base_url = f"https://services.leadconnectorhq.com/custom-menus/{menu_id}/"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Version": "2021-07-28",
+        "Authorization": f"Bearer {agency_instance.access_token}"
+    }
+
+    # Step 1: Fetch the existing menu
+    try:
+        fetch_url = "https://services.leadconnectorhq.com/custom-menus/?query=dashboard"
+        fetch_headers = {
+            "Accept": "application/json",
+            "Version": "2021-07-28",
+            "Authorization": f"Bearer {agency_instance.access_token}"
+        }
+        fetch_response = requests.get(fetch_url, headers=fetch_headers)
+        fetch_response.raise_for_status()
+        menus = fetch_response.json().get("customMenus", [])
+    except Exception as e:
+        print(f"Error fetching custom menus: {e}")
+        return
+
+    # Find the target menu by ID
+    existing_menu = next((m for m in menus if m["id"] == menu_id), None)
+    if not existing_menu:
+        print(f"Menu with ID {menu_id} not found.")
+        return
+
+    existing_locations = set(existing_menu.get("locations", []))
+
     for location_id in tokens:
-        print(location_id)
         try:
-            # Prepare the API URL and headers
-            url = "https://services.leadconnectorhq.com/custom-menus/"
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Version": "2021-07-28",
-                "Authorization": f"Bearer {agency_instance.access_token}"
-            }
+            # Step 2: Add new location if not already present
+            if location_id not in existing_locations:
+                existing_locations.add(location_id)
 
-            # Payload for creating the custom menu
-            payload = {
-                "title": "Reloop SMS Dashboard",
-                "url": f"https://channels.reloop.pro/user/dashboard?locationId={location_id}",
-                "icon": {
-                    "name": "message",
-                    "fontFamily": "far"
-                },
-                "showOnCompany": False,
-                "showOnLocation": True,
-                "showToAllLocations": False,
-                "openMode": "iframe",
-                "locations": [
-                    location_id
-                ],
-                "userRole": "all",
-                "allowCamera": False,
-                "allowMicrophone": False
-            }
+                payload = {
+                    "locations": list(existing_locations)
+                }
 
-            # Make the POST request
-            response = requests.post(url, json=payload, headers=headers)
-
-            # Optional: check for errors
-            if response.status_code in (200, 201):
-                print("Custom menu created successfully.")
+                # Step 3: Update the menu
+                
             else:
-                print(f"Failed to create custom menu: {response.status_code} - {response.text}")
+                print(f"Location {location_id} already exists in the menu.")
 
         except Exception as e:
-            print(f"Error creating custom menu: {str(e)}")
+            print(f"Error updating menu for location {location_id}: {e}")
 
+
+    payload = {
+        "locations": list(existing_locations)
+    }
+
+    response = requests.put(base_url, json=payload, headers=headers)
+
+    if response.status_code in (200, 201):
+        print(f"✅ Location added successfully.")
+    else:
+        print(f"❌ Failed to update")
 
 
 import requests
@@ -332,7 +353,7 @@ def fetch_ghl_custom_menus(access_token):
     Returns:
         list: List of custom menus if successful, otherwise None
     """
-    url = "https://services.leadconnectorhq.com/custom-menus/"
+    url = "https://services.leadconnectorhq.com/custom-menus/?query=dashboard"
     headers = {
         "Accept": "application/json",
         "Version": "2021-07-28",
