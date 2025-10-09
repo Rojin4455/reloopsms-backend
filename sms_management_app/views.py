@@ -175,14 +175,39 @@ def transmit_dlr_callback(request):
             if status in ['delivered', 'success']:
                 sms_message.status = 'delivered'
                 sms_message.delivered_at = timezone.now()
-            elif status in ['failed', 'error', 'hard-bounce', 'soft-bounce']:
-                sms_message.status = 'failed'
-                sms_message.error_message = data.get('error_description', 'Delivery failed')
-            elif status == 'expired':
-                sms_message.status = 'expired'
+
+            elif status in ["failed", "error", "hard-bounce", "soft-bounce"]:
+                sms_message.status = "failed"
+                sms_message.error_message = data.get("error_description", "Delivery failed")
+
+                # 🔁 Refund wallet for failed messages
+                wallet = getattr(sms_message.ghl_account, "wallet", None)
+                if wallet:
+                    try:
+                        wallet.refund(
+                            amount=wallet.outbound_segment_charge,
+                            reference_id=str(sms_message.id),
+                            description=f"Refund for failed message {sms_message.id}"
+                        )
+                    except Exception as e:
+                        print(f"Refund failed for {sms_message.id}: {e}")
+
+            elif status == "expired":
+                sms_message.status = "expired"
+
+                # 🔁 Refund wallet for expired messages
+                wallet = getattr(sms_message.ghl_account, "wallet", None)
+                if wallet:
+                    try:
+                        wallet.refund(
+                            amount=wallet.outbound_segment_charge,
+                            reference_id=str(sms_message.id),
+                            description=f"Refund for expired message {sms_message.id}"
+                        )
+                    except Exception as e:
+                        print(f"Refund failed for {sms_message.id}: {e}")
 
             sms_message.save()
-
 
             
             update_ghl_message_status_task.delay(
