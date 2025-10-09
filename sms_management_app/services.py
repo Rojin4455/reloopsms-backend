@@ -595,12 +595,22 @@ def update_ghl_message_status(message_id, status, ghl_token):
     }
 
     print(f"[DEBUG] Status being sent: '{status}'")
-    if status == "failed":
-        status = "pending"
-    
-    payload = {
-        "status": status
-    }
+    status = status.lower()
+
+    # Build payload based on status
+    if status in ["failed", "expired"]:
+        payload = {
+            "status": status,
+            "error": {
+                "code": "1",
+                "type": "saas",
+                "message": "There was an error from the provider"
+            }
+        }
+    else:
+        payload = {
+            "status": status
+        }
     
     try:
         print(f"[GHL API] Updating message {message_id} to status '{status}'...")
