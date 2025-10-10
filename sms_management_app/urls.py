@@ -33,6 +33,6 @@ urlpatterns = [
     path("numbers/<str:location_id>/", CombinedNumbersList.as_view(), name="combined_numbers_list_with_location"),
     path("numbers-register/", RegisterNumber.as_view(), name="register_number"),
 
-
-
+    path('numbers/available/', GetAvailableNumbers.as_view(), name='available-numbers'),
+    path('numbers/location/<str:location_id>/', GetLocationNumbers.as_view(), name='location-numbers'),
 ]

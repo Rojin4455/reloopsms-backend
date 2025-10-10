@@ -10,7 +10,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Sum, Count, Q
-
+from decimal import Decimal
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated,IsAdminUser
@@ -29,6 +29,16 @@ from .serializers import UserSerializer, RegisterSerializer
 from .models import GHLAuthCredentials, Wallet, WalletTransaction
 from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer, WalletListingSerializer, WalletTransactionListingSerializer
 from .filters import WalletFilter, WalletTransactionFilter
+
+import stripe
+from urllib.parse import quote
+from django.utils.timezone import now
+from .models import StripeCustomerData
+from django.conf import settings
+
+
+stripe.api_key = settings.STRIPE_TEST_API_KEY
+# stripe.api_key = settings.STRIPE_LIVE_API_KEY
 
 
 # Create your views here.
@@ -398,3 +408,168 @@ class WalletSummaryView(APIView):
         return Response(summary_data, status=200)
 
 
+
+
+
+@csrf_exempt
+def stripe_customer_lookup(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        email = data.get("email")
+        agency = AgencyToken.objects.first()
+        token = agency.access_token
+
+        if not email:
+            return JsonResponse({"error": "Email is required"}, status=400)
+        if not token:
+            return JsonResponse({"error": "Token is required"}, status=400)
+
+        # --- 1️⃣ Search for Stripe customer ---
+        customers = stripe.Customer.search(
+            query=f"email:'{email}'",
+            limit=10,
+        )
+
+        if not customers.data:
+            return JsonResponse({"message": "No customers found for this email."}, status=404)
+
+        # Pick the latest customer by created date
+        latest_customer = sorted(customers.data, key=lambda c: c.created, reverse=True)[0]
+        customer_id = latest_customer.id
+
+        # --- 2️⃣ Get default payment method ---
+        payment_method_id = None
+        try:
+            payment_methods = stripe.PaymentMethod.list(
+                customer=customer_id,
+                type="card",
+                limit=1,
+            )
+            if payment_methods.data:
+                payment_method_id = payment_methods.data[0].id
+        except Exception:
+            pass
+
+        # --- 3️⃣ Lookup LeadConnector Location ---
+        encoded_email = quote(email)
+        url = f"https://services.leadconnectorhq.com/locations/search?email={encoded_email}"
+
+        headers = {
+            "Accept": "application/json",
+            "Version": "2021-07-28",
+            "Authorization": f"Bearer {token}",
+        }
+
+        location_id = None
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            location_data = response.json()
+
+            if "locations" in location_data and location_data["locations"]:
+                # Sort by createdAt if available, else take the first
+                latest_location = location_data["locations"][0]
+                location_id = latest_location.get("id")
+        except Exception as e:
+            print("LeadConnector lookup failed:", str(e))
+
+        # --- 4️⃣ Save or update in DB ---
+        obj, created = StripeCustomerData.objects.update_or_create(
+            email=email,
+            defaults={
+                "customer_id": customer_id,
+                "payment_method_id": payment_method_id,
+                "location_id": location_id,
+            },
+        )
+
+        # --- 5️⃣ Return combined result ---
+        return JsonResponse({
+            "success": True,
+            "message": "Customer and location saved successfully.",
+            "email": obj.email,
+            "customer_id": obj.customer_id,
+            "payment_method_id": obj.payment_method_id,
+            "location_id": obj.location_id,
+        })
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+    
+
+
+
+@csrf_exempt
+def create_deduction(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        location_id = data.get("location_id")
+        amount = data.get("amount")  # Amount in cents
+        currency = data.get("currency", "usd")  # default to USD
+
+        if not location_id or not amount:
+            return JsonResponse({"error": "location_id and amount are required"}, status=400)
+
+        # 1️⃣ Lookup StripeCustomer by location_id
+        customer = StripeCustomerData.objects.filter(location_id=location_id).first()
+        if not customer:
+            return JsonResponse({"error": "Customer not found for this location_id"}, status=404)
+
+        if not customer.payment_method_id:
+            return JsonResponse({"error": "Customer has no saved payment method"}, status=400)
+
+        # 2️⃣ Create PaymentIntent (charge saved card)
+        payment_intent = stripe.PaymentIntent.create(
+            amount=int(float(amount) * 100),
+            currency=currency,
+            customer=customer.customer_id,
+            payment_method=customer.payment_method_id,
+            off_session=True,
+            confirm=True,
+        )
+
+        amount = Decimal(str(amount))
+        reference_id = payment_intent.id
+
+        if amount <= 0:
+            return JsonResponse({"error": "Invalid amount"}, status=400)
+
+        try:
+            account = GHLAuthCredentials.objects.get(location_id=location_id)
+        except GHLAuthCredentials.DoesNotExist:
+            return JsonResponse({"error": "GHL account not found"}, status=404)
+
+        wallet, _ = Wallet.objects.get_or_create(account=account)
+
+
+        new_balance = wallet.add_funds(amount,reference_id=reference_id)
+
+        # 3️⃣ Return result
+        return JsonResponse({
+            "success": True,
+            "message": "Payment completed successfully.",
+            "payment_intent_id": payment_intent.id,
+            "status": payment_intent.status,
+            "amount": payment_intent.amount,
+            "currency": payment_intent.currency,
+            "customer_email": customer.email,
+            "location_id": location_id,
+        })
+
+    except stripe.error.CardError as e:
+        # Handle declined card, SCA required, etc.
+        err = e.json_body.get("error", {})
+        return JsonResponse({
+            "success": False,
+            "message": err.get("message"),
+            "code": err.get("code")
+        }, status=402)
+
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)

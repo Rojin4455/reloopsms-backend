@@ -319,3 +319,26 @@ class TransmitNumber(models.Model):
 
     def __str__(self):
         return f"{self.number} ({self.status})"
+    
+
+
+class StripeCustomer(models.Model):
+    email = models.EmailField(unique=True)
+    customer_id = models.CharField(max_length=255)
+    payment_method_id = models.CharField(max_length=255, blank=True, null=True)
+    location_id = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.email} ({self.customer_id})"
+    
+
+class StripeCustomerData(models.Model):
+    email = models.EmailField(unique=True)
+    customer_id = models.CharField(max_length=255)
+    payment_method_id = models.CharField(max_length=255, blank=True, null=True)
+    location_id = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.email} ({self.customer_id})"

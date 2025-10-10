@@ -748,32 +748,58 @@ class RegisterNumber(APIView):
         return Response({"message": "Number registered successfully"}, status=status.HTTP_200_OK)
 
 
-# Authenticated versions
-class AuthenticatedListAvailableNumbers(APIView):
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+# 1️⃣ Get all available numbers (Public endpoint)
+class GetAvailableNumbers(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        queryset = TransmitNumber.objects.filter(status='available')
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = TransmitNumberSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+# 2️⃣ Get registered and owned numbers for a location (Authenticated endpoint)
+class GetLocationNumbers(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get_paginated_queryset(self, queryset, request):
-        paginator = PageNumberPagination()
-        paginator.page_size = 10  # Or make configurable
-        result_page = paginator.paginate_queryset(queryset, request)
-        return paginator.get_paginated_response(TransmitNumberSerializer(result_page, many=True).data)
+    def get(self, request, location_id):
+        if not location_id:
+            return Response(
+                {"error": "location_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    def get(self, request, location_id=None):
-        response_data = {}
+        # Registered numbers
+        registered_queryset = TransmitNumber.objects.filter(
+            ghl_account__location_id=location_id,
+            status='registered'
+        )
+        registered_serializer = TransmitNumberSerializer(registered_queryset, many=True)
 
-        # Available numbers
-        available_queryset = TransmitNumber.objects.filter(status='available')
-        response_data['available'] = self.get_paginated_queryset(available_queryset, request).data
+        # Owned numbers
+        owned_queryset = TransmitNumber.objects.filter(
+            ghl_account__location_id=location_id,
+            status='owned'
+        )
+        owned_serializer = TransmitNumberSerializer(owned_queryset, many=True)
 
-        # Registered numbers (only if location_id is provided)
-        if location_id:
-            registered_queryset = TransmitNumber.objects.filter(location_id=location_id, status='registered')
-            response_data['registered'] = self.get_paginated_queryset(registered_queryset, request).data
+        response_data = {
+            "registered": {
+                "count": registered_queryset.count(),
+                "results": registered_serializer.data
+            },
+            "owned": {
+                "count": owned_queryset.count(),
+                "results": owned_serializer.data
+            },
+        }
 
-            owned_queryset = TransmitNumber.objects.filter(location_id=location_id, status='owned')
-            response_data['owned'] = self.get_paginated_queryset(owned_queryset, request).data
-        else:
-            response_data['registered'] = {"results": [], "count": 0}
-            response_data['owned'] = {"results": [], "count": 0}
-
-        return Response(response_data)
+        return Response(response_data, status=status.HTTP_200_OK)
