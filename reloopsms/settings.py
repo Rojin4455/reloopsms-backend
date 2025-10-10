@@ -180,6 +180,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'core.tasks.sync_all_wallets_with_ghl',
         'schedule': timedelta(minutes=5),
     },
+    'make-api-call-for-sync_numbers': {
+        'task': 'sms_management_app.tasks.sync_numbers',
+        'schedule': timedelta(hours=20),
+    },
 }
 
 

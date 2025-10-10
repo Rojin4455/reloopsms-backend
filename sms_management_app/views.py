@@ -6,9 +6,9 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import GHLTransmitSMSMapping
-from core.models import GHLAuthCredentials, Wallet, WalletTransaction
+from core.models import GHLAuthCredentials, Wallet, WalletTransaction,TransmitNumber
 from transmitsms.models import TransmitSMSAccount
-from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer, WalletTransactionSerializer, WalletSerializer, MappingSerializer
+from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer, WalletTransactionSerializer, WalletSerializer, MappingSerializer,TransmitNumberSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
 from django.core.exceptions import ValidationError
 
@@ -16,8 +16,10 @@ from rest_framework.generics import ListAPIView
 from rest_framework import generics, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .filters import SMSMessageFilter  # import your filter
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.db.models import Sum,Avg
+from rest_framework.pagination import PageNumberPagination
+
 
 
 # Create your views here.
@@ -666,3 +668,112 @@ class GHLAccountTransactionsAPIView(LocationMixin, ListAPIView):
         if hasattr(self, "_error") and self._error:
             return self._error
         return super().list(request, *args, **kwargs)
+    
+
+
+
+
+
+class CombinedNumbersList(APIView):
+    permission_classes = [AllowAny]
+
+    class StandardResultsSetPagination(PageNumberPagination):
+        page_size = 10
+        page_size_query_param = "page_size"
+        max_page_size = 50
+
+    def paginate_queryset(self, queryset, request):
+        paginator = self.StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = TransmitNumberSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def get(self, request, location_id=None):
+        response_data = {}
+
+        # Paginate Available numbers only
+        available_queryset = TransmitNumber.objects.filter(status='available')
+        response_data['available'] = self.paginate_queryset(available_queryset, request).data
+
+        # Registered numbers — no pagination
+        if location_id:
+            registered_queryset = TransmitNumber.objects.filter(
+                ghl_account__location_id=location_id,
+                status='registered'
+            )
+            serializer_registered = TransmitNumberSerializer(registered_queryset, many=True)
+            response_data['registered'] = {
+                "count": registered_queryset.count(),
+                "results": serializer_registered.data
+            }
+
+            # Owned numbers — no pagination
+            owned_queryset = TransmitNumber.objects.filter(
+                ghl_account__location_id=location_id,
+                status='owned'
+            )
+            serializer_owned = TransmitNumberSerializer(owned_queryset, many=True)
+            response_data['owned'] = {
+                "count": owned_queryset.count(),
+                "results": serializer_owned.data
+            }
+        else:
+            response_data['registered'] = {"results": [], "count": 0}
+            response_data['owned'] = {"results": [], "count": 0}
+
+        return Response(response_data)
+
+
+class RegisterNumber(APIView):
+    permission_classes = [AllowAny]  # Public
+
+    def post(self, request):
+        number_id = request.data.get("number_id")
+        location_id = request.data.get("location_id")
+
+        print("hreree")
+
+        if not number_id or not location_id:
+            return Response({"error": "number_id and location_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            number_obj = TransmitNumber.objects.get(id=number_id, status="available")
+        except TransmitNumber.DoesNotExist:
+            return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
+        ghl = GHLAuthCredentials.objects.get(location_id=location_id)
+        number_obj.status = "registered"
+        number_obj.ghl_account = ghl
+        number_obj.save()
+
+        return Response({"message": "Number registered successfully"}, status=status.HTTP_200_OK)
+
+
+# Authenticated versions
+class AuthenticatedListAvailableNumbers(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_paginated_queryset(self, queryset, request):
+        paginator = PageNumberPagination()
+        paginator.page_size = 10  # Or make configurable
+        result_page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(TransmitNumberSerializer(result_page, many=True).data)
+
+    def get(self, request, location_id=None):
+        response_data = {}
+
+        # Available numbers
+        available_queryset = TransmitNumber.objects.filter(status='available')
+        response_data['available'] = self.get_paginated_queryset(available_queryset, request).data
+
+        # Registered numbers (only if location_id is provided)
+        if location_id:
+            registered_queryset = TransmitNumber.objects.filter(location_id=location_id, status='registered')
+            response_data['registered'] = self.get_paginated_queryset(registered_queryset, request).data
+
+            owned_queryset = TransmitNumber.objects.filter(location_id=location_id, status='owned')
+            response_data['owned'] = self.get_paginated_queryset(owned_queryset, request).data
+        else:
+            response_data['registered'] = {"results": [], "count": 0}
+            response_data['owned'] = {"results": [], "count": 0}
+
+        return Response(response_data)

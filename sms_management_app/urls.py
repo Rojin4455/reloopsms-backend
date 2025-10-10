@@ -28,4 +28,11 @@ urlpatterns = [
 
     path("ghl-account/messages/", GHLAccountMessagesAPIView.as_view(), name="ghl-messages"),
     path("ghl-account/transactions/", GHLAccountTransactionsAPIView.as_view(), name="ghl-transactions"),
+
+    path("numbers/", CombinedNumbersList.as_view(), name="combined_numbers_list"),
+    path("numbers/<str:location_id>/", CombinedNumbersList.as_view(), name="combined_numbers_list_with_location"),
+    path("numbers-register/", RegisterNumber.as_view(), name="register_number"),
+
+
+
 ]

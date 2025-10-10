@@ -155,6 +155,8 @@ class TransmitSMSService:
         if not clients_data or 'clients' not in clients_data:
             return None
         
+        print("email : ", email, "phone : ", phone, "name : ", name)
+        
         print("client datasssL :", clients_data)
         for client in clients_data['clients']:
             if email and client.get('email') == email:
@@ -400,7 +402,8 @@ class GHLIntegrationService:
             )
             
             if not result['success']:
-                raise Exception(f"Failed to create TransmitSMS account: {result['error']}")
+                # raise Exception(f"Failed to create TransmitSMS account: {result['error']}")
+                return result['error']
             
             account_data = result['data']
             transmit_account = TransmitSMSAccount.objects.create(

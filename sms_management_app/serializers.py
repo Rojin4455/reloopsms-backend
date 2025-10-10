@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.db.models import Count, Q, Sum
 
 from .models import GHLTransmitSMSMapping, SMSMessage, WebhookLog
-from core.models import GHLAuthCredentials, Wallet, WalletTransaction
+from core.models import GHLAuthCredentials, Wallet, WalletTransaction, TransmitNumber
 
 class GHLTransmitSMSMappingSerializer(serializers.ModelSerializer):
     class Meta:
@@ -140,3 +140,16 @@ class DashboardSerializer(serializers.Serializer):
     mapping = MappingSerializer()
     messages_summary = MessagesSummarySerializer()
     alerts = AlertsSerializer()
+
+
+
+
+class TransmitNumberSerializer(serializers.ModelSerializer):
+    location_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TransmitNumber
+        fields = ['id', 'number', 'status', 'location_id', 'price', 'is_active', 'purchased_at', 'registered_at', 'last_synced_at']
+
+    def get_location_id(self, obj):
+        return obj.ghl_account.id if obj.ghl_account else None

@@ -163,12 +163,16 @@ def tokens(request):
         
         # # Setup TransmitSMS account
         service = GHLIntegrationService()
-        mapping = service.setup_transmit_account_for_ghl(obj, account_details)
-        query_params = urlencode({
-            "locationId":response_data.get("locationId"),
-        })
+        error_message = service.setup_transmit_account_for_ghl(obj, account_details)
 
-        frontend_url = f"{FRONTEND_URL}/highlevel-accounts?{query_params}"
+        query_params = {
+            "locationId": response_data.get("locationId"),
+        }
+
+        if error_message:
+            query_params["warning"] = error_message
+
+        frontend_url = f"{FRONTEND_URL}/highlevel-accounts?{urlencode(query_params)}"
         
         return redirect(frontend_url)
         
@@ -176,7 +180,6 @@ def tokens(request):
         frontend_url = "http://localhost:3000/admin/error-onboard"
         return redirect(frontend_url)
     
-
 
 
 def agency_tokens(request):

@@ -290,3 +290,32 @@ class WalletTransaction(models.Model):
 
     def __str__(self):
         return f"{self.wallet.account.user_id} | {self.transaction_type} {self.amount} | Balance: {self.balance_after}"
+
+
+
+
+class TransmitNumber(models.Model):
+    STATUS_CHOICES = [
+        ("available", "Available"),
+        ("registered", "Registered"),
+        ("owned", "Owned"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ghl_account = models.ForeignKey(
+        GHLAuthCredentials,
+        on_delete=models.CASCADE,
+        related_name="transmit_numbers",
+        null=True, blank=True,
+        help_text="The GHL account this number is linked to"
+    )
+    number = models.CharField(max_length=20, unique=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="available")
+    is_active = models.BooleanField(default=True)
+    purchased_at = models.DateTimeField(null=True, blank=True)
+    registered_at = models.DateTimeField(null=True, blank=True)
+    last_synced_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.number} ({self.status})"
