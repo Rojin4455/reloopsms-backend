@@ -17,6 +17,7 @@ django-rest-framework==0.1.0
 django-timezone-field==7.1
 djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.1
+git-filter-repo==2.47.0
 idna==3.10
 kombu==5.5.4
 packaging==25.0
@@ -31,6 +32,8 @@ requests==2.32.4
 rest-framework-simplejwt==0.0.2
 six==1.17.0
 sqlparse==0.5.3
+stripe==13.0.1
+typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
 vine==5.1.0
