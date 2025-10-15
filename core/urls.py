@@ -41,5 +41,4 @@ urlpatterns = [
 
     path("stripe/webhook/customer-lookup/", stripe_customer_lookup, name="stripe_customer_lookup"),
     path("stripe/webhook/create-deduction/", create_deduction, name="create_deduction"),
-
 ]

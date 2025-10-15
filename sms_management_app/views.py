@@ -756,7 +756,7 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 # 1️⃣ Get all available numbers (Public endpoint)
 class GetAvailableNumbers(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         queryset = TransmitNumber.objects.filter(status='available')
@@ -803,3 +803,71 @@ class GetLocationNumbers(APIView):
         }
 
         return Response(response_data, status=status.HTTP_200_OK)
+    
+
+
+
+
+class OwnNumber(APIView):
+    permission_classes = [IsAuthenticated]  # Make public or adjust permissions
+
+    def post(self, request):
+        number_id = request.data.get("number_id")
+        location_id = request.data.get("location_id")
+        forward_url = request.data.get("forward_url")  # Optional callback
+
+        if not number_id or not location_id:
+            return Response(
+                {"error": "number_id and location_id are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            number_obj = TransmitNumber.objects.get(id=number_id, status="available")
+        except TransmitNumber.DoesNotExist:
+            return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            ghl = GHLAuthCredentials.objects.get(location_id=location_id)
+            transmit_account = ghl.transmit_sms_mapping.transmit_account
+        except GHLAuthCredentials.DoesNotExist:
+            return Response({"error": "GHL account not found for this location"}, status=status.HTTP_404_NOT_FOUND)
+        except GHLTransmitSMSMapping.DoesNotExist:
+            return Response({"error": "Mapping not found for this GHL account"}, status=status.HTTP_404_NOT_FOUND)
+        except TransmitSMSAccount.DoesNotExist:
+            return Response({"error": "Transmit account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Initialize TransmitSMS service
+        transmit_service = TransmitSMSService()
+
+        # Prepare payload for owning the number
+        payload = {}
+        if number_obj.number:
+            payload['number'] = number_obj.number
+        if forward_url:
+            payload['forward_url'] = forward_url
+
+        url = f"{transmit_service.base_url}/lease-number.json"
+        headers = transmit_service._get_auth_header(api_key=transmit_account.api_key, api_secret=transmit_account.api_secret)  # Use agency credentials
+
+        try:
+            response = requests.post(url, data=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+        except requests.exceptions.RequestException as e:
+            return Response({"error": "Failed to call TransmitSMS API", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Check API response success
+        if result.get("error", {}).get("code") == "SUCCESS":
+            number_obj.status = "owned"
+            number_obj.ghl_account = ghl
+            number_obj.save()
+            return Response({
+                "message": "Number successfully owned",
+                "data": result
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                "error": "Failed to own the number",
+                "details": result.get("error")
+            }, status=status.HTTP_400_BAD_REQUEST)

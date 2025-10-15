@@ -501,6 +501,7 @@ def stripe_customer_lookup(request):
     
 
 
+import re
 
 @csrf_exempt
 def create_deduction(request):
@@ -508,10 +509,27 @@ def create_deduction(request):
         return JsonResponse({"error": "Only POST allowed"}, status=405)
 
     try:
+        # data = json.loads(request.body)
+        # location_id = data.get("location_id")
+        # amount = data.get("amount")  # Amount in cents
+        # currency = data.get("currency", "usd")  # default to USD
+
         data = json.loads(request.body)
-        location_id = data.get("location_id")
-        amount = data.get("amount")  # Amount in cents
-        currency = data.get("currency", "usd")  # default to USD
+
+        # Extract location_id
+        location_id = data.get("SMS Recharge LocationID")
+
+        # Extract the credit amount string
+        recharge_text = data.get("SMS Credit Recharge", "")
+
+        # Find all dollar amounts (like $30.00 and $1)
+        amounts = re.findall(r"\$([\d\.]+)", recharge_text)
+
+        # Convert and sum them up (30.00 + 1.00 = 31.00)
+        amount = sum(float(a) for a in amounts) if amounts else 0.0
+
+        # Default currency
+        currency = "usd"
 
         if not location_id or not amount:
             return JsonResponse({"error": "location_id and amount are required"}, status=400)

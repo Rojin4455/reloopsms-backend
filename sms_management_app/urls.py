@@ -35,4 +35,6 @@ urlpatterns = [
 
     path('numbers/available/', GetAvailableNumbers.as_view(), name='available-numbers'),
     path('numbers/location/<str:location_id>/', GetLocationNumbers.as_view(), name='location-numbers'),
+    path("number-own/", OwnNumber.as_view(), name="number-own"),
+
 ]
