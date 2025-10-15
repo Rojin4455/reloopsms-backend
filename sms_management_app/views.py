@@ -378,12 +378,20 @@ def wallet_adjust_funds(request, location_id):
     """
     try:
         data = json.loads(request.body.decode("utf-8"))
-        action = data.get("action")
-        amount = Decimal(str(data.get("amount", 0)))
-        reference_id = data.get("reference_id")
+        if "payment" in data:
+            payment_data = data["payment"]
+            reference_id = payment_data.get("transaction_id")
+            amount = Decimal(str(payment_data.get("total_amount", 0)))
+            action = "add"  # default or implied action for payment type
+        else:
+            # Standard payload handling
+            action = data.get("action")
+            amount = Decimal(str(data.get("amount", 0)))
+            reference_id = data.get("reference_id")
 
-        if not action or action not in ["gift", "take", "add"]:
-            return JsonResponse({"error": "Invalid or missing action"}, status=400)
+            # Validate action only if no payment data
+            if not action or action not in ["gift", "take", "add"]:
+                return JsonResponse({"error": "Invalid or missing action"}, status=400)
 
         if amount <= 0:
             return JsonResponse({"error": "Invalid amount"}, status=400)
