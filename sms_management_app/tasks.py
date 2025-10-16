@@ -352,7 +352,7 @@ def sync_numbers(account_id=None, filter_type='available'):
         TransmitNumber.objects.filter(
             id__in=to_delete
         ).exclude(
-            status__in=['registered', 'owned']
+            status__in=['owned']
         ).delete()
 
     print(f"✅ Synced TransmitSMS numbers:")

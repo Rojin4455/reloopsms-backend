@@ -697,41 +697,51 @@ class CombinedNumbersList(APIView):
         return paginator.get_paginated_response(serializer.data)
 
     def get(self, request, location_id=None):
-        response_data = {}
+        search_query = request.GET.get("search", "").strip()
 
-        # Paginate Available numbers only
+        # Base queryset for available numbers
         available_queryset = TransmitNumber.objects.filter(status='available')
-        response_data['available'] = self.paginate_queryset(available_queryset, request).data
 
-        # Registered numbers — no pagination
+        # Apply search filter if provided
+        if search_query:
+            available_queryset = available_queryset.filter(number__icontains=search_query)
+
+        response_data = {
+            "available": self.paginate_queryset(available_queryset, request).data
+        }
+
+        # For registered and owned
         if location_id:
             registered_queryset = TransmitNumber.objects.filter(
                 ghl_account__location_id=location_id,
                 status='registered'
             )
-            serializer_registered = TransmitNumberSerializer(registered_queryset, many=True)
-            response_data['registered'] = {
-                "count": registered_queryset.count(),
-                "results": serializer_registered.data
-            }
-
-            # Owned numbers — no pagination
             owned_queryset = TransmitNumber.objects.filter(
                 ghl_account__location_id=location_id,
                 status='owned'
             )
-            serializer_owned = TransmitNumberSerializer(owned_queryset, many=True)
-            response_data['owned'] = {
+
+            # Apply same search if needed
+            if search_query:
+                registered_queryset = registered_queryset.filter(number__icontains=search_query)
+                owned_queryset = owned_queryset.filter(number__icontains=search_query)
+
+            response_data["registered"] = {
+                "count": registered_queryset.count(),
+                "results": TransmitNumberSerializer(registered_queryset, many=True).data
+            }
+            response_data["owned"] = {
                 "count": owned_queryset.count(),
-                "results": serializer_owned.data
+                "results": TransmitNumberSerializer(owned_queryset, many=True).data
             }
         else:
-            response_data['registered'] = {"results": [], "count": 0}
-            response_data['owned'] = {"results": [], "count": 0}
+            response_data["registered"] = {"results": [], "count": 0}
+            response_data["owned"] = {"results": [], "count": 0}
 
         return Response(response_data)
 
 
+from sms_management_app.tasks import sync_numbers
 class RegisterNumber(APIView):
     permission_classes = [AllowAny]  # Public
 
@@ -740,6 +750,9 @@ class RegisterNumber(APIView):
         location_id = request.data.get("location_id")
 
         print("hreree")
+
+        sync_numbers(filter_type='available')
+
 
         if not number_id or not location_id:
             return Response({"error": "number_id and location_id are required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -767,7 +780,13 @@ class GetAvailableNumbers(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+
+        search_query = request.GET.get("search", "").strip()
+
         queryset = TransmitNumber.objects.filter(status='available')
+        if search_query:
+            queryset = queryset.filter(number__icontains=search_query)
+
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(queryset, request)
         serializer = TransmitNumberSerializer(page, many=True)
@@ -780,33 +799,33 @@ class GetLocationNumbers(APIView):
 
     def get(self, request, location_id):
         if not location_id:
-            return Response(
-                {"error": "location_id is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "location_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Registered numbers
+
+        search_query = request.GET.get("search", "").strip()
+
         registered_queryset = TransmitNumber.objects.filter(
             ghl_account__location_id=location_id,
             status='registered'
         )
-        registered_serializer = TransmitNumberSerializer(registered_queryset, many=True)
-
-        # Owned numbers
         owned_queryset = TransmitNumber.objects.filter(
             ghl_account__location_id=location_id,
             status='owned'
         )
-        owned_serializer = TransmitNumberSerializer(owned_queryset, many=True)
+
+        # Apply search
+        if search_query:
+            registered_queryset = registered_queryset.filter(number__icontains=search_query)
+            owned_queryset = owned_queryset.filter(number__icontains=search_query)
 
         response_data = {
             "registered": {
                 "count": registered_queryset.count(),
-                "results": registered_serializer.data
+                "results": TransmitNumberSerializer(registered_queryset, many=True).data
             },
             "owned": {
                 "count": owned_queryset.count(),
-                "results": owned_serializer.data
+                "results": TransmitNumberSerializer(owned_queryset, many=True).data
             },
         }
 
@@ -814,68 +833,111 @@ class GetLocationNumbers(APIView):
     
 
 
-
-
 class OwnNumber(APIView):
-    permission_classes = [IsAuthenticated]  # Make public or adjust permissions
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         number_id = request.data.get("number_id")
         location_id = request.data.get("location_id")
-        forward_url = request.data.get("forward_url")  # Optional callback
 
+        # Optionally sync latest numbers (can skip if not needed every time)
+        sync_numbers(filter_type='available')
+
+        # Validate input
         if not number_id or not location_id:
             return Response(
                 {"error": "number_id and location_id are required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Check if number exists (can be available, registered, etc.)
         try:
-            number_obj = TransmitNumber.objects.get(id=number_id, status="available")
+            number_obj = TransmitNumber.objects.get(id=number_id)
         except TransmitNumber.DoesNotExist:
-            return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Number not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
+        # Fetch the GHL account
         try:
             ghl = GHLAuthCredentials.objects.get(location_id=location_id)
-            transmit_account = ghl.transmit_sms_mapping.transmit_account
         except GHLAuthCredentials.DoesNotExist:
-            return Response({"error": "GHL account not found for this location"}, status=status.HTTP_404_NOT_FOUND)
-        except GHLTransmitSMSMapping.DoesNotExist:
-            return Response({"error": "Mapping not found for this GHL account"}, status=status.HTTP_404_NOT_FOUND)
-        except TransmitSMSAccount.DoesNotExist:
-            return Response({"error": "Transmit account not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Invalid location_id"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Initialize TransmitSMS service
-        transmit_service = TransmitSMSService()
+        # Update number ownership
+        number_obj.status = "owned"
+        number_obj.ghl_account = ghl
+        number_obj.save()
 
-        # Prepare payload for owning the number
-        payload = {}
-        if number_obj.number:
-            payload['number'] = number_obj.number
-        if forward_url:
-            payload['forward_url'] = forward_url
+        return Response(
+            {"message": f"Number {number_obj.number} marked as owned successfully"},
+            status=status.HTTP_200_OK
+        )
 
-        url = f"{transmit_service.base_url}/lease-number.json"
-        headers = transmit_service._get_auth_header(api_key=transmit_account.api_key, api_secret=transmit_account.api_secret)  # Use agency credentials
+# class OwnNumber(APIView):
+#     permission_classes = [IsAuthenticated]  # Make public or adjust permissions
 
-        try:
-            response = requests.post(url, data=payload, headers=headers)
-            response.raise_for_status()
-            result = response.json()
-        except requests.exceptions.RequestException as e:
-            return Response({"error": "Failed to call TransmitSMS API", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#     def post(self, request):
+#         number_id = request.data.get("number_id")
+#         location_id = request.data.get("location_id")
+#         forward_url = request.data.get("forward_url")  # Optional callback
 
-        # Check API response success
-        if result.get("error", {}).get("code") == "SUCCESS":
-            number_obj.status = "owned"
-            number_obj.ghl_account = ghl
-            number_obj.save()
-            return Response({
-                "message": "Number successfully owned",
-                "data": result
-            }, status=status.HTTP_200_OK)
-        else:
-            return Response({
-                "error": "Failed to own the number",
-                "details": result.get("error")
-            }, status=status.HTTP_400_BAD_REQUEST)
+#         if not number_id or not location_id:
+#             return Response(
+#                 {"error": "number_id and location_id are required"},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         try:
+#             number_obj = TransmitNumber.objects.get(id=number_id, status="available")
+#         except TransmitNumber.DoesNotExist:
+#             return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
+
+#         try:
+#             ghl = GHLAuthCredentials.objects.get(location_id=location_id)
+#             transmit_account = ghl.transmit_sms_mapping.transmit_account
+#         except GHLAuthCredentials.DoesNotExist:
+#             return Response({"error": "GHL account not found for this location"}, status=status.HTTP_404_NOT_FOUND)
+#         except GHLTransmitSMSMapping.DoesNotExist:
+#             return Response({"error": "Mapping not found for this GHL account"}, status=status.HTTP_404_NOT_FOUND)
+#         except TransmitSMSAccount.DoesNotExist:
+#             return Response({"error": "Transmit account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+#         # Initialize TransmitSMS service
+#         transmit_service = TransmitSMSService()
+
+#         # Prepare payload for owning the number
+#         payload = {}
+#         if number_obj.number:
+#             payload['number'] = number_obj.number
+#         if forward_url:
+#             payload['forward_url'] = forward_url
+
+#         url = f"{transmit_service.base_url}/lease-number.json"
+#         headers = transmit_service._get_auth_header(api_key=transmit_account.api_key, api_secret=transmit_account.api_secret)  # Use agency credentials
+
+#         try:
+#             response = requests.post(url, data=payload, headers=headers)
+#             response.raise_for_status()
+#             result = response.json()
+#         except requests.exceptions.RequestException as e:
+#             return Response({"error": "Failed to call TransmitSMS API", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#         # Check API response success
+#         if result.get("error", {}).get("code") == "SUCCESS":
+#             number_obj.status = "owned"
+#             number_obj.ghl_account = ghl
+#             number_obj.save()
+#             return Response({
+#                 "message": "Number successfully owned",
+#                 "data": result
+#             }, status=status.HTTP_200_OK)
+#         else:
+#             return Response({
+#                 "error": "Failed to own the number",
+#                 "details": result.get("error")
+#             }, status=status.HTTP_400_BAD_REQUEST)
