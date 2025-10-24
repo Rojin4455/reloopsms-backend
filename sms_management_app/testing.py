@@ -38,6 +38,7 @@ def get_numbers(account_id=None, filter_type=None):
 
     numbers_data = available_numbers.get("data", {}).get("numbers", [])
     api_numbers = {str(num["number"]): Decimal(str(num.get("price", 0))) for num in numbers_data}
+    print("api_numbers: ", api_numbers)
 
     # # Existing numbers in DB for this account
     # existing_numbers = TransmitNumber.objects.filter(ghl_account=ghl_account)
@@ -153,3 +154,30 @@ def get_all_numbers_account(client_id=None, email=None, phone=None, client_pays=
 
 
 
+
+def purchase_number_in_agency(number, account_id=None):
+
+    service = TransmitSMSService()
+    if account_id:
+        transmit_account = TransmitSMSAccount.objects.get(account_id=account_id)
+        purchase_response = service.purchase_number(
+            number,
+            api_key=transmit_account.api_key,
+            api_secret=transmit_account.api_secret
+        )
+    else:
+        purchase_response = service.purchase_number(
+                number
+            )
+        
+
+from core.models import GHLAuthCredentials
+from core.service import GHLService
+
+
+def get_sms_record(record_id,main_location_id):
+    main_creds = GHLAuthCredentials.objects.get(location_id=main_location_id)
+    service = GHLService(access_token=main_creds.access_token)
+
+    record  = service.get_record(record_id,main_location_id)
+    print(record)

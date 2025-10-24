@@ -366,3 +366,50 @@ def sync_numbers(account_id=None, filter_type='available'):
         "deleted": len(to_delete),
         "total": len(api_numbers),
     }
+
+
+from dateutil.relativedelta import relativedelta
+
+
+@shared_task
+def charge_due_transmit_numbers():
+    """
+    Charge wallet for TransmitNumbers whose next_renewal_date is today.
+    Updates last_billed_at and next_renewal_date.
+    """
+    today = timezone.now().date()
+    due_numbers = TransmitNumber.objects.filter(
+        next_renewal_date=today,
+        status="owned",
+        is_extra_number=True,
+        is_active=True
+    )
+
+    for number in due_numbers:
+        wallet = getattr(number.ghl_account, "wallet", None)
+        if not wallet:
+            print(f"⚠️ No wallet found for account {number.ghl_account}")
+            continue
+
+        charge_amount = number.monthly_charge
+        try:
+            if wallet.balance >= charge_amount:
+                # Deduct funds using your Wallet method
+                wallet.deduct_funds(
+                    amount=charge_amount,
+                    reference_id=str(number.id),
+                    description=f"Monthly renewal for Transmit number {number.number}"
+                )
+
+                # Update billing info
+                number.last_billed_at = timezone.now()
+                # Use relativedelta to safely add one month
+                number.next_renewal_date += relativedelta(months=+1)
+                number.save(update_fields=["last_billed_at", "next_renewal_date"])
+
+                print(f"✅ Charged {number.number} for {charge_amount}, next renewal {number.next_renewal_date}")
+            else:
+                # Insufficient balance — optionally mark as inactive or notify user
+                print(f"⚠️ Insufficient funds to charge {number.number} ({charge_amount} required)")
+        except Exception as e:
+            print(f"🔥 Failed to charge {number.number}: {e}")

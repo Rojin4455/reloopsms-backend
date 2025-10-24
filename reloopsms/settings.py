@@ -181,8 +181,8 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': timedelta(minutes=5),
     },
     'make-api-call-for-sync_numbers': {
-        'task': 'sms_management_app.tasks.sync_numbers',
-        'schedule': timedelta(hours=1),
+        'task': 'sms_management_app.tasks.charge_due_transmit_numbers',
+        'schedule': timedelta(days=1),
     },
 }
 

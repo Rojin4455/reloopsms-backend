@@ -36,6 +36,7 @@ class GHLService:
         r.raise_for_status()
         # fallback simple scan — you may adapt if API has GET /records/{id}
         data = r.json()
+        print("data: ",data)
         for rec in data.get("records", []):
             if rec.get("id") == record_id:
                 return rec

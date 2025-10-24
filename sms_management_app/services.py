@@ -148,6 +148,75 @@ class TransmitSMSService:
         except requests.exceptions.RequestException as e:
             print(f"Error fetching clients: {e}")
             return None
+        
+
+    def purchase_number(self, number, forward_url=None, api_key=None, api_secret=None):
+        """
+        Purchase (lease) a dedicated number from TransmitSMS API.
+        Returns dict with { success: bool, error: <msg>, data: <response> }
+        """
+        print("🔹 [purchase_number] Starting purchase_number method")
+
+        # Base URL and auth
+        url = f"{self.base_url}/lease-number.json"
+        print(f"🔸 [purchase_number] API Endpoint: {url}")
+
+        headers = self._get_auth_header(api_key=api_key, api_secret=api_secret)
+        print(f"🔸 [purchase_number] Headers Prepared: {headers}")
+
+        # Payload preparation
+        payload = {"number": number}
+        if forward_url:
+            payload["forward_url"] = forward_url
+        print(f"🔸 [purchase_number] Payload Prepared: {payload}")
+
+        try:
+            print("🔹 [purchase_number] Sending POST request to TransmitSMS...")
+            response = requests.post(url, data=payload, headers=headers, timeout=30)
+            print(f"✅ [purchase_number] Response Status Code: {response.status_code}")
+            print(f"✅ [purchase_number] Raw Response Text: {response.text}")
+
+            response.raise_for_status()
+
+            # Parse JSON response
+            result = response.json()
+            print(f"🔹 [purchase_number] Parsed JSON Response: {result}")
+
+            # ✅ Success check
+            error_code = result.get("error", {}).get("code")
+            print(f"🔸 [purchase_number] Error Code from Response: {error_code}")
+
+            if error_code == "SUCCESS":
+                print("✅ [purchase_number] Number successfully purchased.")
+                return {
+                    "success": True,
+                    "data": result
+                }
+            else:
+                error_message = result.get("error", {}).get("description", "Unknown error")
+                print(f"❌ [purchase_number] Failed to purchase number. Error: {error_message}")
+                return {
+                    "success": False,
+                    "error": error_message,
+                    "data": result
+                }
+
+        except requests.exceptions.RequestException as e:
+            print(f"🚨 [purchase_number] Exception occurred: {str(e)}")
+            return {
+                "success": False,
+                "error": f"TransmitSMS API request failed: {str(e)}",
+                "data": {}
+            }
+
+        except Exception as e:
+            print(f"🔥 [purchase_number] Unexpected Error: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Unexpected error: {str(e)}",
+                "data": {}
+            }
+
 
     def find_existing_account(self, email=None, phone=None, name=None):
         """Find existing TransmitSMS account by email or phone"""
@@ -274,7 +343,7 @@ class TransmitSMSService:
     
 
 
-    def get_dedicated_numbers(self, filter_type="owned", page=1, max_results=100, api_key=None, api_secret=None):
+    def get_dedicated_numbers(self, filter_type="owned", page=1, max_results=10, api_key=None, api_secret=None):
         """
         Get list of dedicated virtual numbers from TransmitSMS.
         API docs: https://api.transmitsms.com/get-numbers.json
@@ -289,8 +358,8 @@ class TransmitSMSService:
 
         params = {
             "filter": filter_type,  # 'owned' or 'available'
-            "page": page,
-            "max": max_results
+            "page": 1,
+            "max": 1
         }
 
         print(f"[INFO] Fetching {filter_type} numbers (page {page})")
@@ -300,11 +369,11 @@ class TransmitSMSService:
         try:
             response = requests.get(url, headers=headers, params=params)
             print(f"[INFO] Response Status Code: {response.status_code}")
-            print(f"[DEBUG] Raw Response: {response.text}")
+            # print(f"[DEBUG] Raw Response: {response.text}")
 
             response.raise_for_status()
             result = response.json()
-            print(f"[DEBUG] Parsed Response JSON: {result}")
+            # print(f"[DEBUG] Parsed Response JSON: {result}")
 
             if result.get('error', {}).get('code') == 'SUCCESS':
                 print(f"[SUCCESS] Retrieved {len(result.get('numbers', []))} numbers successfully")

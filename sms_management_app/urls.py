@@ -31,10 +31,15 @@ urlpatterns = [
 
     path("numbers/", CombinedNumbersList.as_view(), name="combined_numbers_list"),
     path("numbers/<str:location_id>/", CombinedNumbersList.as_view(), name="combined_numbers_list_with_location"),
-    path("numbers-register/", RegisterNumber.as_view(), name="register_number"),
+    # path("numbers-register/", RegisterNumber.as_view(), name="register_number"),
 
-    path('numbers/available/', GetAvailableNumbers.as_view(), name='available-numbers'),
+    path('live-numbers/available/', GetAvailableNumbers.as_view(), name='available-numbers'),
     path('numbers/location/<str:location_id>/', GetLocationNumbers.as_view(), name='location-numbers'),
     path("number-own/", OwnNumber.as_view(), name="number-own"),
+
+    path('live-numbers/available/', GetAvailableNumbers.as_view(), name='available-numbers'),
+    path("numbers-register/", RegisterNumber.as_view(), name="register_number"),
+    path("numbers-request-premium/", RequestPremiumNumber.as_view(), name="request_premium_number"),
+    path("numbers-register-premium/", RegisterPremiumNumber.as_view(), name="register_premium_number"),
 
 ]

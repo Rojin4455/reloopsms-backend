@@ -41,11 +41,61 @@ class GHLAuthCredentials(models.Model):
     business_phone = models.CharField(max_length=20, null=True, blank=True, help_text="Business phone number in E.164 format")
     contact_name = models.CharField(max_length=255, null=True, blank=True, help_text="Primary contact name")
 
+
+    # NEW FIELDS FOR NUMBER MANAGEMENT
+    current_standard_purchased = models.IntegerField(
+        default=0, 
+        help_text="Current number of standard numbers owned"
+    )
+    max_standard_numbers = models.IntegerField(
+        default=1, 
+        help_text="Maximum standard numbers allowed in subscription"
+    )
+    current_premium_purchased = models.IntegerField(
+        default=0, 
+        help_text="Current number of premium numbers owned"
+    )
+    max_premium_numbers = models.IntegerField(
+        default=1, 
+        help_text="Maximum premium numbers allowed in subscription"
+    )
+
+
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    
+
     def __str__(self):
         return f"{self.user_id} - {self.company_id}"
+    
+
+
+    @property
+    def standard_numbers_available(self):
+        """Calculate available standard number slots"""
+        return max(0, self.max_standard_numbers - self.current_standard_purchased)
+    
+    @property
+    def premium_numbers_available(self):
+        """Calculate available premium number slots"""
+        return max(0, self.max_premium_numbers - self.current_premium_purchased)
+    
+    def can_purchase_standard(self):
+        """Check if user can purchase a standard number"""
+        return self.current_standard_purchased <= self.max_standard_numbers
+    
+    def can_purchase_premium(self):
+        """Check if user can purchase a premium number"""
+        return self.current_premium_purchased <= self.max_premium_numbers
+    
+
+    def has_sufficient_wallet_balance(self, amount):
+        """Check if wallet has sufficient balance"""
+        if hasattr(self, "wallet") and self.wallet:
+            return self.wallet.balance >= amount
+        return False
 
 class Wallet(models.Model):
     """Wallet for each GHL account"""
@@ -299,6 +349,7 @@ class TransmitNumber(models.Model):
         ("available", "Available"),
         ("registered", "Registered"),
         ("owned", "Owned"),
+        ("pending", "Pending"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -317,9 +368,46 @@ class TransmitNumber(models.Model):
     registered_at = models.DateTimeField(null=True, blank=True)
     last_synced_at = models.DateTimeField(auto_now=True)
 
+       # NEW FIELDS
+    is_extra_number = models.BooleanField(
+        default=False,
+        help_text="True if this number is beyond subscription quota (wallet-paid)"
+    )
+    monthly_charge = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=Decimal('0.00'),
+        help_text="Monthly charge for this number (if extra)"
+    )
+    last_billed_at = models.DateTimeField(
+        null=True, 
+        blank=True,
+        help_text="Last time this number was billed (for monthly charges)"
+    )
+    next_renewal_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The next scheduled renewal/charge date from TransmitSMS"
+    )
+
     def __str__(self):
         return f"{self.number} ({self.status})"
     
+    @property
+    def is_standard(self):
+        """Check if this is a standard number"""
+        return self.price <= 11
+    
+    @property
+    def is_premium(self):
+        """Check if this is a premium number"""
+        return self.price > 11
+    
+    @property
+    def label(self):
+        """Get label for display"""
+        return "Standard" if self.is_standard else "Premium"
+
 
 
 class StripeCustomer(models.Model):

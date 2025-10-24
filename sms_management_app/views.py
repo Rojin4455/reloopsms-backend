@@ -741,32 +741,32 @@ class CombinedNumbersList(APIView):
         return Response(response_data)
 
 
-from sms_management_app.tasks import sync_numbers
-class RegisterNumber(APIView):
-    permission_classes = [AllowAny]  # Public
+# from sms_management_app.tasks import sync_numbers
+# class RegisterNumber(APIView):
+#     permission_classes = [AllowAny]  # Public
 
-    def post(self, request):
-        number_id = request.data.get("number_id")
-        location_id = request.data.get("location_id")
+#     def post(self, request):
+#         number_id = request.data.get("number_id")
+#         location_id = request.data.get("location_id")
 
-        print("hreree")
+#         print("hreree")
 
-        sync_numbers(filter_type='available')
+#         sync_numbers(filter_type='available')
 
 
-        if not number_id or not location_id:
-            return Response({"error": "number_id and location_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+#         if not number_id or not location_id:
+#             return Response({"error": "number_id and location_id are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            number_obj = TransmitNumber.objects.get(id=number_id, status="available")
-        except TransmitNumber.DoesNotExist:
-            return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
-        ghl = GHLAuthCredentials.objects.get(location_id=location_id)
-        number_obj.status = "registered"
-        number_obj.ghl_account = ghl
-        number_obj.save()
+#         try:
+#             number_obj = TransmitNumber.objects.get(id=number_id, status="available")
+#         except TransmitNumber.DoesNotExist:
+#             return Response({"error": "Number not available"}, status=status.HTTP_404_NOT_FOUND)
+#         ghl = GHLAuthCredentials.objects.get(location_id=location_id)
+#         number_obj.status = "registered"
+#         number_obj.ghl_account = ghl
+#         number_obj.save()
 
-        return Response({"message": "Number registered successfully"}, status=status.HTTP_200_OK)
+#         return Response({"message": "Number registered successfully"}, status=status.HTTP_200_OK)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -776,26 +776,26 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 
 # 1️⃣ Get all available numbers (Public endpoint)
-class GetAvailableNumbers(APIView):
-    permission_classes = [IsAuthenticated]
+# class GetAvailableNumbers(APIView):
+#     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+#     def get(self, request):
 
-        search_query = request.GET.get("search", "").strip()
+#         search_query = request.GET.get("search", "").strip()
 
-        queryset = TransmitNumber.objects.filter(status='available')
-        if search_query:
-            queryset = queryset.filter(number__icontains=search_query)
+#         queryset = TransmitNumber.objects.filter(status='available')
+#         if search_query:
+#             queryset = queryset.filter(number__icontains=search_query)
 
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        serializer = TransmitNumberSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+#         paginator = StandardResultsSetPagination()
+#         page = paginator.paginate_queryset(queryset, request)
+#         serializer = TransmitNumberSerializer(page, many=True)
+#         return paginator.get_paginated_response(serializer.data)
 
 
 # 2️⃣ Get registered and owned numbers for a location (Authenticated endpoint)
 class GetLocationNumbers(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, location_id):
         if not location_id:
@@ -806,7 +806,7 @@ class GetLocationNumbers(APIView):
 
         registered_queryset = TransmitNumber.objects.filter(
             ghl_account__location_id=location_id,
-            status='registered'
+            status='pending'
         )
         owned_queryset = TransmitNumber.objects.filter(
             ghl_account__location_id=location_id,
@@ -819,7 +819,7 @@ class GetLocationNumbers(APIView):
             owned_queryset = owned_queryset.filter(number__icontains=search_query)
 
         response_data = {
-            "registered": {
+            "pending": {
                 "count": registered_queryset.count(),
                 "results": TransmitNumberSerializer(registered_queryset, many=True).data
             },
@@ -832,7 +832,43 @@ class GetLocationNumbers(APIView):
         return Response(response_data, status=status.HTTP_200_OK)
     
 
+    def patch(self, request, location_id):
+        """
+        Toggle is_active for a specific TransmitNumber.
+        Expects JSON payload: {"number": "<number>", "is_active": false}
+        """
+        number_value = request.data.get("number")
+        is_active = request.data.get("is_active")
 
+        if number_value is None or is_active is None:
+            return Response(
+                {"error": "Both 'number' and 'is_active' are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            transmit_number = TransmitNumber.objects.get(
+                ghl_account__location_id=location_id,
+                number=number_value
+            )
+        except TransmitNumber.DoesNotExist:
+            return Response(
+                {"error": f"Transmit number {number_value} not found for this location"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        transmit_number.is_active = bool(is_active)
+        transmit_number.save(update_fields=["is_active"])
+
+        return Response(
+            {
+                "message": f"Transmit number {number_value} updated successfully",
+                "number": transmit_number.number,
+                "is_active": transmit_number.is_active
+            },
+            status=status.HTTP_200_OK
+        )
+    
 class OwnNumber(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -941,3 +977,497 @@ class OwnNumber(APIView):
 #                 "error": "Failed to own the number",
 #                 "details": result.get("error")
 #             }, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+
+
+# ============================================
+# 1. Get Available Numbers (Real-time fetch)
+# ============================================
+class GetAvailableNumbers(APIView):
+    """
+    Fetch available numbers directly from Transmit SMS API in real-time.
+    Supports search, pagination, and filtering by price/label.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+
+
+        print("heyyyy")
+        # Extract query parameters
+        search_query = request.GET.get("search", "").strip()
+        price_min = request.GET.get("price_min")
+        price_max = request.GET.get("price_max")
+        label_filter = request.GET.get("label")  # 'standard' or 'premium'
+        sort_by = request.GET.get("sort_by", "price_asc")  # price_asc, price_desc
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+
+        try:
+            # Fetch numbers directly from Transmit SMS
+            service = TransmitSMSService()
+            transmit_response = service.get_dedicated_numbers(filter_type='available')
+            
+            numbers_data = transmit_response.get("data", {}).get("numbers", [])
+            
+            # Transform to our format
+            available_numbers = []
+            for num in numbers_data:
+                number_str = str(num["number"])
+                price = Decimal(str(num.get("price", 0)))
+                
+                # Determine label (Standard if price <= 11, Premium if > 11)
+                label = "Standard" if price <= 11 else "Premium"
+                
+                available_numbers.append({
+                    "number": number_str,
+                    "price": float(price),
+                    "label": label,
+                    "display_price": f"${price}",
+                    "can_auto_register": price <= 11  # Only standard can auto-register
+                })
+            
+            # Apply filters
+            filtered_numbers = self._apply_filters(
+                available_numbers, 
+                search_query, 
+                price_min, 
+                price_max, 
+                label_filter
+            )
+            
+            # Apply sorting
+            filtered_numbers = self._apply_sorting(filtered_numbers, sort_by)
+            
+            # Manual pagination
+            total_count = len(filtered_numbers)
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            paginated_numbers = filtered_numbers[start_idx:end_idx]
+            
+            # Build response
+            response_data = {
+                "count": total_count,
+                "next": page * page_size < total_count,
+                "previous": page > 1,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total_count + page_size - 1) // page_size,
+                "results": paginated_numbers
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to fetch numbers: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _apply_filters(self, numbers, search, price_min, price_max, label):
+        """Apply search and filter criteria"""
+        filtered = numbers
+        
+        # Search by digits
+        if search:
+            filtered = [n for n in filtered if search in n["number"]]
+        
+        # Price range filter
+        if price_min:
+            filtered = [n for n in filtered if n["price"] >= float(price_min)]
+        if price_max:
+            filtered = [n for n in filtered if n["price"] <= float(price_max)]
+        
+        # Label filter (standard/premium)
+        if label:
+            label_lower = label.lower()
+            filtered = [n for n in filtered if n["label"].lower() == label_lower]
+        
+        return filtered
+    
+    def _apply_sorting(self, numbers, sort_by):
+        """Apply sorting"""
+        if sort_by == "price_desc":
+            return sorted(numbers, key=lambda x: x["price"], reverse=True)
+        else:  # default price_asc
+            return sorted(numbers, key=lambda x: x["price"])
+
+
+from django.db import transaction
+
+
+# ============================================
+# 3. Register Number (Standard - Auto)
+# ============================================
+class RegisterNumber(APIView):
+
+    
+
+    """
+    Register a Standard number (price <= $11).
+    Auto-purchases via Transmit SMS API if quota available.
+    If quota exceeded, attempts wallet purchase.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        number = request.data.get("number")  # The actual phone number string
+        location_id = request.data.get("location_id")
+
+        if not number or not location_id:
+            return Response(
+                {"error": "number and location_id are required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Get GHL account
+            ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+            wallet = getattr(ghl_account, "wallet", None)
+
+            # ✅ Fetch number details from Transmit API
+            service = TransmitSMSService()
+            transmit_response = service.get_dedicated_numbers(filter_type='available')
+            numbers_data = transmit_response.get("data", {}).get("numbers", [])
+            
+            number_info = next((n for n in numbers_data if str(n["number"]) == number), None)
+            # if number_info:
+            #     return Response(
+            #         {"error": "Number not found or no longer available"},
+            #         status=status.HTTP_404_NOT_FOUND
+            #     )
+            price=11
+
+            # price = Decimal(str(number_info.get("price", 0)))
+
+            # ✅ Only allow standard numbers here
+            if price > 11:
+                return Response(
+                    {"error": "This is a Premium number. Please use the Request flow."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Check if already owned
+            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+                return Response(
+                    {"error": "This number is already owned."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Check subscription entitlement first
+            use_wallet = False
+            charge_amount = Decimal('0.00')
+
+            if ghl_account.can_purchase_standard():
+                # Subscription slot available
+                ghl_account.current_standard_purchased += 1
+                ghl_account.save(update_fields=["current_standard_purchased"])
+
+            else:
+                # No subscription quota — attempt wallet charge
+                use_wallet = True
+                charge_amount = price
+
+                if not wallet:
+                    return Response(
+                        {"error": "Wallet not found for this account."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                if not ghl_account.has_sufficient_wallet_balance(price):
+                    return Response(
+                        {"error": "Insufficient wallet balance to purchase this number."},
+                        status=status.HTTP_402_PAYMENT_REQUIRED
+                    )
+
+                # Deduct funds from wallet
+                wallet.deduct_funds(price, description=f"Purchase of extra standard number {number}")
+
+            # ✅ Register (and simulate purchase) on Transmit
+            purchase_response = service.purchase_number(number)
+
+            transmit_account = ghl_account.transmit_sms_mapping.transmit_account
+            if not purchase_response.get("success", False):
+                # Refund if wallet was used
+                if use_wallet:
+                    wallet.refund(price, description=f"Refund for failed purchase of {number}")
+                return Response(
+                    {"error": f"Failed to purchase number from Transmit: {purchase_response.get('error')}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # ✅ Extract renewal date safely
+            data = purchase_response.get("data", {})
+            next_charge_str = data.get("next_charge")
+            next_renewal_date = None
+            if next_charge_str:
+                try:
+                    from datetime import datetime
+                    next_renewal_date = datetime.strptime(next_charge_str, "%Y-%m-%d").date()
+                except ValueError:
+                    print(f"⚠️ Invalid next_charge date format: {next_charge_str}")
+
+            # ✅ Save number to DB
+            with transaction.atomic():
+                TransmitNumber.objects.create(
+                    ghl_account=ghl_account,
+                    number=number,
+                    price=price,
+                    status="owned",
+                    purchased_at=timezone.now(),
+                    registered_at=timezone.now(),
+                    is_extra_number=use_wallet,
+                    monthly_charge=price if use_wallet else Decimal('0.00'),
+                    last_billed_at=timezone.now() if use_wallet else None,
+                    next_renewal_date=next_renewal_date  # ✅ added here
+                )
+
+            return Response({
+                "message": "Number registered and purchased successfully",
+                "number": number,
+                "price": float(price),
+                "charged": float(charge_amount) if use_wallet else 0.0,
+                "payment_method": "wallet" if use_wallet else "subscription",
+                "is_extra": use_wallet,
+                "next_renewal_date": str(next_renewal_date) if next_renewal_date else None,  # ✅ optional: return in response
+            }, status=status.HTTP_200_OK)
+
+        except GHLAuthCredentials.DoesNotExist:
+            return Response(
+                {"error": "Invalid location_id"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+
+class RequestPremiumNumber(APIView):
+    """
+    Request a Premium number (price > $11).
+    This does NOT purchase immediately — it saves a request for admin review.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        number = request.data.get("number")
+        location_id = request.data.get("location_id")
+
+        if not number or not location_id:
+            return Response(
+                {"error": "number and location_id are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+
+            # ✅ Fetch number details from Transmit API
+            service = TransmitSMSService()
+            transmit_response = service.get_dedicated_numbers(filter_type='available')
+            numbers_data = transmit_response.get("data", {}).get("numbers", [])
+
+            number_info = next((n for n in numbers_data if str(n["number"]) == number), None)
+            if not number_info:
+                return Response(
+                    {"error": "Number not found or no longer available"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            price = Decimal(str(number_info.get("price", 0)))
+
+            # ✅ Must be a premium number
+            if price <= 11:
+                return Response(
+                    {"error": "This is a Standard number. Please use the standard registration flow."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Check if already owned or requested
+            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+                return Response(
+                    {"error": "This number is already owned."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if TransmitNumber.objects.filter(
+                number=number, ghl_account=ghl_account, status="pending"
+            ).exists():
+                return Response(
+                    {"error": "You already have a pending request for this number."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Create request record
+            TransmitNumber.objects.create(
+                ghl_account=ghl_account,
+                number=number,
+                price=price,
+                status="pending"
+            )
+
+            return Response({
+                "message": "Your premium number request has been submitted successfully.",
+                "number": number,
+                "price": float(price),
+                "status": "pending"
+            }, status=status.HTTP_200_OK)
+
+        except GHLAuthCredentials.DoesNotExist:
+            return Response(
+                {"error": "Invalid location_id"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class RegisterPremiumNumber(APIView):
+    """
+    Register a Premium number (price > $11).
+    Uses subscription quota if available, else charges from wallet.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        number = request.data.get("number")
+        location_id = request.data.get("location_id")
+
+        if not number or not location_id:
+            return Response(
+                {"error": "number and location_id are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+            wallet = getattr(ghl_account, "wallet", None)
+
+            # ✅ Fetch number details from Transmit API
+            service = TransmitSMSService()
+            transmit_response = service.get_dedicated_numbers(filter_type='available')
+            numbers_data = transmit_response.get("data", {}).get("numbers", [])
+
+            number_info = next((n for n in numbers_data if str(n["number"]) == number), None)
+            if not number_info:
+                return Response(
+                    {"error": "Number not found or no longer available"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            price = Decimal(str(number_info.get("price", 0)))
+
+            # ✅ Must be premium (> $11)
+            if price <= 11:
+                return Response(
+                    {"error": "This is a Standard number. Please use the standard registration flow."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ Check if already owned
+            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+                return Response(
+                    {"error": "This number is already owned."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            
+
+            # ✅ Determine how to pay: subscription or wallet
+            use_wallet = False
+            charge_amount = Decimal('0.00')
+
+            if ghl_account.can_purchase_premium():
+                # Within subscription quota
+                ghl_account.current_premium_purchased += 1
+                ghl_account.save(update_fields=["current_premium_purchased"])
+            else:
+                # No premium quota, charge from wallet
+                use_wallet = True
+                charge_amount = price
+
+                if not wallet:
+                    return Response(
+                        {"error": "Wallet not found for this account."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                if not ghl_account.has_sufficient_wallet_balance(price):
+                    return Response(
+                        {"error": "Insufficient wallet balance to purchase this premium number."},
+                        status=status.HTTP_402_PAYMENT_REQUIRED
+                    )
+
+                # Deduct funds
+                wallet.deduct_funds(price, description=f"Purchase of premium number {number}")
+
+            # ✅ Purchase number via Transmit API
+            purchase_response = service.purchase_number(number)
+            if not purchase_response.get("success", False):
+                # Refund if wallet used
+                if use_wallet:
+                    wallet.refund(price, description=f"Refund for failed purchase of {number}")
+                return Response(
+                    {"error": f"Failed to purchase number from Transmit: {purchase_response.get('error')}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # ✅ Extract renewal date from Transmit response
+            data = purchase_response.get("data", {})
+            next_charge_str = data.get("next_charge")
+            next_renewal_date = None
+            if next_charge_str:
+                from datetime import datetime
+                try:
+                    next_renewal_date = datetime.strptime(next_charge_str, "%Y-%m-%d").date()
+                except ValueError:
+                    print(f"⚠️ Invalid next_charge date format: {next_charge_str}")
+
+            # ✅ Save number in DB
+            with transaction.atomic():
+                TransmitNumber.objects.update_or_create(
+                    ghl_account=ghl_account,
+                    number=number,
+                    defaults={
+                        "price": price,
+                        "status": "owned",
+                        "purchased_at": timezone.now(),
+                        "registered_at": timezone.now(),
+                        "is_extra_number": use_wallet,
+                        "monthly_charge": price if use_wallet else Decimal("0.00"),
+                        "last_billed_at": timezone.now() if use_wallet else None,
+                        "next_renewal_date": next_renewal_date,  # ✅ Added
+                    },
+                )
+
+            # ✅ Response payload
+            return Response({
+                "message": "Premium number registered successfully",
+                "number": number,
+                "price": float(price),
+                "charged": float(charge_amount) if use_wallet else 0.0,
+                "payment_method": "wallet" if use_wallet else "subscription",
+                "is_extra": use_wallet,
+                "next_renewal_date": str(next_renewal_date) if next_renewal_date else None,  # ✅ Optional: include in response
+            }, status=status.HTTP_200_OK)
+
+
+        except GHLAuthCredentials.DoesNotExist:
+            return Response(
+                {"error": "Invalid location_id"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

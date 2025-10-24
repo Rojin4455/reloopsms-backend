@@ -91,6 +91,7 @@ def sync_all_wallets_with_ghl():
 
     for wallet in Wallet.objects.select_related("account").all():
         try:
+          
            if wallet.ghl_object_id:
                 print("type(wallet.cred_remaining)",type(wallet.cred_remaining))
                 print("type(wallet.seg_remaining)",type(wallet.seg_remaining))
@@ -111,9 +112,12 @@ def sync_all_wallets_with_ghl():
                         "value": float(wallet.outbound_segment_charge)
                     },
                     "seg_used": int(wallet.seg_used),
-                }                
+                    "standard_numbers": wallet.account.current_standard_purchased,
+                    "max_premium_numbers": wallet.account.max_premium_numbers,
+                    "max_standard_numbers": wallet.account.max_standard_numbers,
+                    "premium_numbers": wallet.account.current_premium_purchased,
+                }
                 service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
-           pass
         except Exception:
             # log exception and continue with next wallet
             continue
