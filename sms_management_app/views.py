@@ -1225,6 +1225,7 @@ class RegisterNumber(APIView):
                     last_billed_at=timezone.now() if use_wallet else None,
                     next_renewal_date=next_renewal_date  # ✅ added here
                 )
+                trigger_inbound_webhook(ghl_account.location_name, ghl_account.location_id, number, str(price), "owned",'standard')
 
             return Response({
                 "message": "Number registered and purchased successfully",
@@ -1246,7 +1247,36 @@ class RegisterNumber(APIView):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
+
+def trigger_inbound_webhook(location_name, location_id, number, price, status, number_type):
+    """
+    Triggers an inbound webhook after number purchase.
+    """
+    webhook_url = (
+        "https://services.leadconnectorhq.com/hooks/fM52tHdamVZya3QZH3ck/webhook-trigger/"
+        "f5e74905-7df1-46e7-9d2d-44da2a81add0"
+    )
+
+    params = {
+        "email": "test@test.com",
+        "location_name": location_name,
+        "location_id": location_id,
+        "number": number,
+        "price": price,
+        "status": status,
+        "number_type": number_type,  # 'standard' or 'premium'
+    }
+
+    try:
+        response = requests.get(webhook_url, params=params, timeout=10)
+        response.raise_for_status()
+        print("✅ Webhook triggered successfully:", response.status_code)
+    except requests.RequestException as e:
+        print("❌ Webhook trigger failed:", str(e))  
+
+# trigger_inbound_webhook("test_location_name","testlocationid","number", "11", "owned", "standard")
+
+ 
 
 class RequestPremiumNumber(APIView):
     """
@@ -1449,6 +1479,8 @@ class RegisterPremiumNumber(APIView):
                     },
                 )
 
+                trigger_inbound_webhook(ghl_account.location_name, ghl_account.location_id, number, str(price), "owned",'premium')
+
             # ✅ Response payload
             return Response({
                 "message": "Premium number registered successfully",
@@ -1471,3 +1503,53 @@ class RegisterPremiumNumber(APIView):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+
+
+
+class RemoveNumberFromLocation(APIView):
+    """
+    Remove (unlink) a number from a given location.
+    - Resets status to 'available'
+    - Clears ghl_account mapping
+    - Optionally deletes the record entirely if you prefer
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, location_id):
+        number_value = request.data.get("number")
+
+        if not number_value:
+            return Response(
+                {"error": "number is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            transmit_number = TransmitNumber.objects.get(
+                ghl_account__location_id=location_id,
+                number=number_value
+            )
+        except TransmitNumber.DoesNotExist:
+            return Response(
+                {"error": f"Number {number_value} not found for this location."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Option 1️⃣: Keep in DB but mark available
+        transmit_number.status = "available"
+        transmit_number.ghl_account = None
+        transmit_number.is_active = False
+        transmit_number.save(update_fields=["status", "ghl_account", "is_active"])
+
+        # Option 2️⃣ (Alternative): Uncomment to delete record entirely
+        # transmit_number.delete()
+
+        return Response(
+            {
+                "message": f"Number {number_value} removed successfully from location {location_id}.",
+                "number": number_value,
+                "status": "available"
+            },
+            status=status.HTTP_200_OK
+        )

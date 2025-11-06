@@ -31,7 +31,6 @@ def get_numbers(account_id=None, filter_type=None):
         )
         # ghl_account = transmit_sms.ghl_account  # assumes FK to GHLAuthCredentials
         ghl_account = transmit_sms.ghl_mapping.ghl_account
-
     else:
         available_numbers = service.get_dedicated_numbers(filter_type)
         ghl_account = None

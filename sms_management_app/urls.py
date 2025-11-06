@@ -42,4 +42,6 @@ urlpatterns = [
     path("numbers-request-premium/", RequestPremiumNumber.as_view(), name="request_premium_number"),
     path("numbers-register-premium/", RegisterPremiumNumber.as_view(), name="register_premium_number"),
 
+    path("numbers/remove/<str:location_id>/", RemoveNumberFromLocation.as_view(), name="remove_number_from_location"),
+
 ]
