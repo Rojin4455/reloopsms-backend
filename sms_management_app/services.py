@@ -428,6 +428,58 @@ class TransmitSMSService:
         except requests.exceptions.RequestException as e:
             print(f"[EXCEPTION] API request failed: {str(e)}")
             return {'success': False, 'error': f"API request failed: {str(e)}"}
+        
+
+
+    def get_number(self, number=None, api_key=None, api_secret=None):
+        """
+        Retrieve details of a specific virtual number.
+        API docs: https://api.transmitsms.com/get-number.json
+
+        Parameters:
+            number (str): The phone number to retrieve details for. (Required)
+            api_key (str): Optional override for API key.
+            api_secret (str): Optional override for API secret.
+
+        Returns:
+            dict: {
+                'success': bool,
+                'data': dict (if success),
+                'error': str (if failed)
+            }
+        """
+        url = f"{self.base_url}/get-number.json"
+        headers = self._get_auth_header(api_key, api_secret)
+
+        if not number:
+            return {'success': False, 'error': 'Number is required.'}
+
+        data = {'number': number}
+
+        print(f"[INFO] Fetching number details for: {number}")
+        print(f"[DEBUG] Request URL: {url}")
+        print(f"[DEBUG] Request Data: {data}")
+
+        try:
+            response = requests.post(url, data=data, headers=headers)
+            print(f"[INFO] Response Status Code: {response.status_code}")
+            print(f"[DEBUG] Raw Response: {response.text}")
+
+            response.raise_for_status()
+            result = response.json()
+            print(f"[DEBUG] Parsed Response JSON: {result}")
+
+            if result.get('error', {}).get('code') == 'SUCCESS':
+                print(f"[SUCCESS] Number details retrieved successfully for: {result.get('number')}")
+                return {'success': True, 'data': result}
+            else:
+                print(f"[ERROR] Failed to retrieve number: {result.get('error', {}).get('description', 'Unknown error')}")
+                return {'success': False, 'error': result.get('error', {}).get('description', 'Unknown error')}
+
+        except requests.exceptions.RequestException as e:
+            print(f"[EXCEPTION] API request failed: {str(e)}")
+            return {'success': False, 'error': f"API request failed: {str(e)}"}
+
 
 
 

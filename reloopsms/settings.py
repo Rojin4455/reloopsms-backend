@@ -184,6 +184,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'sms_management_app.tasks.charge_due_transmit_numbers',
         'schedule': timedelta(days=1),
     },
+    'sync-client-owned-numbers': {
+        'task': 'sms_management_app.tasks.sync_client_owned_numbers',
+        'schedule': timedelta(hours=1),
+    },
 }
 
 

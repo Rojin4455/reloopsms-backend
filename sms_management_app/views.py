@@ -1112,6 +1112,7 @@ class RegisterNumber(APIView):
     Auto-purchases via Transmit SMS API if quota available.
     If quota exceeded, attempts wallet purchase.
     """
+    
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -1553,3 +1554,21 @@ class RemoveNumberFromLocation(APIView):
             },
             status=status.HTTP_200_OK
         )
+    
+
+
+def test_own_number(number, price, ghl_account):
+    TransmitNumber.objects.create(
+        ghl_account=ghl_account,
+        number=number,
+        price=price,
+        status="owned",
+        purchased_at=timezone.now(),
+        registered_at=timezone.now(),
+        # is_extra_number=use_wallet,
+        # monthly_charge=price if use_wallet else Decimal('0.00'),
+        # last_billed_at=timezone.now() if use_wallet else None,
+        # next_renewal_date=next_renewal_date  # ✅ added here
+    )
+
+

@@ -293,6 +293,9 @@ from decimal import Decimal
 from core.models import TransmitNumber
 from sms_management_app.services import TransmitSMSService
 from transmitsms.models import TransmitSMSAccount
+from sms_management_app.models import GHLTransmitSMSMapping
+from django.db import transaction
+from dateutil import parser as date_parser
 
 @shared_task
 def sync_numbers(account_id=None, filter_type='available'):
@@ -367,6 +370,180 @@ def sync_numbers(account_id=None, filter_type='available'):
         "total": len(api_numbers),
     }
 
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def sync_client_owned_numbers(self):
+    """
+    Periodically sync owned numbers for each active TransmitSMS client account.
+    - For each client (TransmitSMSAccount with a mapping), fetch 'owned' numbers
+    - For each number, fetch details via get_number
+    - Update existing TransmitNumber or create new one
+    - For new numbers, apply deduction logic based on subscription quota and price
+    - Remove numbers from our DB that are no longer in TransmitSMS for that client
+    """
+    logger.info("[INFO] Starting owned numbers sync across clients")
+    service = TransmitSMSService()
+
+    # Iterate over active TransmitSMS accounts that are mapped to GHL accounts
+    accounts = TransmitSMSAccount.objects.filter(is_active=True).select_related("ghl_mapping")
+    processed = created_count = updated_count = deleted_count = 0
+
+    for account in accounts:
+        if not hasattr(account, "ghl_mapping"):
+            continue
+        ghl_account = account.ghl_mapping.ghl_account
+        client_label = getattr(ghl_account, "location_name", getattr(account, "account_name", str(account.id)))
+        try:
+            logger.info(f"[INFO] Syncing numbers for client: {client_label}")
+            resp = service.get_dedicated_numbers(filter_type="owned", api_key=account.api_key, api_secret=account.api_secret)
+            if not resp.get("success"):
+                logger.error(f"[ERROR] Failed to fetch owned numbers for client {client_label}: {resp.get('error')}")
+                continue
+            numbers = resp.get("data", {}).get("numbers", []) or []
+            logger.debug(f"[DEBUG] Found {len(numbers)} numbers")
+
+            # Get all numbers from API response (set of number strings)
+            api_number_set = {str(item.get("number")) for item in numbers}
+
+            # Get existing numbers in DB for this client
+            existing_numbers = TransmitNumber.objects.filter(ghl_account=ghl_account, status__in=["owned", "pending"])
+            existing_number_set = {tn.number for tn in existing_numbers}
+
+            # Find numbers to delete (in DB but not in API response)
+            numbers_to_delete = existing_number_set - api_number_set
+            if numbers_to_delete:
+                deleted_objs = TransmitNumber.objects.filter(
+                    ghl_account=ghl_account,
+                    number__in=numbers_to_delete,
+                    status__in=["owned", "pending"]  # Only delete owned/pending, not registered
+                )
+                deleted_count_for_client = deleted_objs.count()
+                deleted_objs.delete()
+                deleted_count += deleted_count_for_client
+                logger.info(f"[DELETE] Removed {deleted_count_for_client} numbers not found in TransmitSMS for client {client_label}: {list(numbers_to_delete)}")
+
+            for item in numbers:
+                processed += 1
+                msisdn = str(item.get("number"))
+                # Fetch number details for precise fields (price, auto_renew, status, next_charge)
+                details = service.get_number(number=msisdn, api_key=account.api_key, api_secret=account.api_secret)
+                if not details.get("success"):
+                    logger.error(f"[ERROR] Failed details for {msisdn}: {details.get('error')}")
+                    continue
+                data = details.get("data", {})
+                price = Decimal(str(data.get("price", item.get("price", 0) or 0)))
+                status_raw = data.get("status") or item.get("status")
+                # Map Transmit status to our status
+                status = "owned" if (status_raw or "").lower() == "active" else "pending"
+                next_charge_str = data.get("next_charge")
+                next_renewal_date = None
+                if next_charge_str:
+                    try:
+                        next_renewal_date = date_parser.parse(next_charge_str).date()
+                    except Exception:
+                        next_renewal_date = None
+
+                # Upsert TransmitNumber
+                try:
+                    with transaction.atomic():
+                        tn, created = TransmitNumber.objects.select_for_update().get_or_create(
+                            number=msisdn,
+                            defaults={
+                                "ghl_account": ghl_account,
+                                "price": price,
+                                "status": status,
+                                "is_active": True,
+                                "next_renewal_date": next_renewal_date,
+                                "monthly_charge": Decimal(str(price)),
+                            },
+                        )
+
+                        if created:
+                            # Determine standard vs premium and apply deduction logic if extra
+                            is_standard = price <= Decimal("11")
+                            use_wallet = False
+                            charge_amount = Decimal("0.00")
+                            wallet = getattr(ghl_account, "wallet", None)
+
+                            if is_standard:
+                                if ghl_account.can_purchase_standard():
+                                    ghl_account.current_standard_purchased += 1
+                                    ghl_account.save(update_fields=["current_standard_purchased"])
+                                    tn.is_extra_number = False
+                                else:
+                                    use_wallet = True
+                                    charge_amount = price
+                                    if wallet and ghl_account.has_sufficient_wallet_balance(price):
+                                        wallet.deduct_funds(
+                                            amount=price,
+                                            reference_id=str(tn.id),
+                                            description=f"Sync purchase of extra standard number {msisdn}",
+                                        )
+                                        tn.is_extra_number = True
+                                        tn.monthly_charge = price
+                                    else:
+                                        logger.warning(f"[WARN] Insufficient funds for extra standard number {msisdn} during sync")
+                                        tn.is_extra_number = True
+                                        tn.monthly_charge = price
+                            else:
+                                # Premium
+                                if ghl_account.can_purchase_premium():
+                                    ghl_account.current_premium_purchased += 1
+                                    ghl_account.save(update_fields=["current_premium_purchased"])
+                                    tn.is_extra_number = False
+                                else:
+                                    use_wallet = True
+                                    charge_amount = price
+                                    if wallet and ghl_account.has_sufficient_wallet_balance(price):
+                                        wallet.deduct_funds(
+                                            amount=price,
+                                            reference_id=str(tn.id),
+                                            description=f"Sync purchase of extra premium number {msisdn}",
+                                        )
+                                        tn.is_extra_number = True
+                                        tn.monthly_charge = price
+                                    else:
+                                        logger.warning(f"[WARN] Insufficient funds for extra premium number {msisdn} during sync")
+                                        tn.is_extra_number = True
+                                        tn.monthly_charge = price
+
+                            tn.next_renewal_date = next_renewal_date
+                            tn.status = status
+                            tn.price = price
+                            tn.ghl_account = ghl_account
+                            tn.save()
+                            created_count += 1
+                            logger.info(f"[SUCCESS] New number added: {msisdn}")
+                        else:
+                            # Update existing record
+                            updated_fields = []
+                            if tn.ghl_account_id != ghl_account.id:
+                                tn.ghl_account = ghl_account
+                                updated_fields.append("ghl_account")
+                            if tn.price != price:
+                                tn.price = price
+                                updated_fields.append("price")
+                            if tn.status != status:
+                                tn.status = status
+                                updated_fields.append("status")
+                            if tn.next_renewal_date != next_renewal_date:
+                                tn.next_renewal_date = next_renewal_date
+                                updated_fields.append("next_renewal_date")
+                            if updated_fields:
+                                tn.save(update_fields=updated_fields + ["last_synced_at"])
+                                updated_count += 1
+                                logger.info(f"[UPDATE] Updated existing number: {msisdn}")
+                except Exception as e:
+                    logger.exception(f"[ERROR] Exception syncing number {msisdn} for {client_label}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.exception(f"[ERROR] Exception syncing client {client_label}: {e}")
+            # Retry on transient issues
+            continue
+
+    logger.info(f"[INFO] Owned numbers sync complete. Processed={processed}, Created={created_count}, Updated={updated_count}, Deleted={deleted_count}")
+    return {"processed": processed, "created": created_count, "updated": updated_count, "deleted": deleted_count}
 
 from dateutil.relativedelta import relativedelta
 

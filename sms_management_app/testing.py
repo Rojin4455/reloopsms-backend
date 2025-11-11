@@ -170,6 +170,13 @@ def purchase_number_in_agency(number, account_id=None):
             )
         
 
+def get_number_details(number, account_id=None):
+
+    service = TransmitSMSService()
+    purchase_response = service.get_number(
+        number
+    )
+
 from core.models import GHLAuthCredentials
 from core.service import GHLService
 
