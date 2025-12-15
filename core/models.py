@@ -247,35 +247,8 @@ class Wallet(models.Model):
         print(f"Final Wallet state: balance={wallet.balance}, cred_remaining={wallet.cred_remaining}, "
             f"seg_remaining={wallet.seg_remaining}\n")
 
-
-        # ✅ After funds are added, retry queued SMS (both outbound + inbound)
-        from sms_management_app.tasks import process_sms_message
-
-        queued_messages = self.account.smsmessage_set.filter(status="queued").order_by("created_at")
-        for sms in queued_messages:
-            if sms.direction == "outbound":
-                # keep your existing logic — outbound is handled here directly
-                try:
-                    cost, segments = self.charge_message("outbound", sms.message_content, reference_id=sms.id)
-                    from sms_management_app.services import GHLIntegrationService
-                    service = GHLIntegrationService()
-                    result = service.send_outbound_sms(sms, cost, segments)
-                    if result["success"]:
-                        sms.status = "sent"
-                        sms.sent_at = timezone.now()
-                        sms.transmit_message_id = result.get("transmit_message_id")
-                    else:
-                        # Refund if failed
-                        self.refund(cost, reference_id=sms.id, description="Refund for failed queued SMS")
-                        sms.status = "failed"
-                        sms.error_message = result["error"]
-                except ValidationError:
-                    sms.status = "queued"  # still insufficient funds
-                sms.save()
-
-            elif sms.direction == "inbound":
-                # ✅ For inbound, just enqueue the Celery task to handle rate limits
-                process_sms_message.delay(str(sms.id))
+        # Note: Queued messages are no longer automatically sent on recharge.
+        # Use the manual send API endpoint to send specific messages when needed.
 
         return self.balance
     
@@ -360,7 +333,7 @@ class TransmitNumber(models.Model):
         null=True, blank=True,
         help_text="The GHL account this number is linked to"
     )
-    number = models.CharField(max_length=20, unique=True)
+    number = models.CharField(max_length=20)  # Removed unique=True
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="available")
     is_active = models.BooleanField(default=True)
@@ -368,7 +341,7 @@ class TransmitNumber(models.Model):
     registered_at = models.DateTimeField(null=True, blank=True)
     last_synced_at = models.DateTimeField(auto_now=True)
 
-       # NEW FIELDS
+    # NEW FIELDS
     is_extra_number = models.BooleanField(
         default=False,
         help_text="True if this number is beyond subscription quota (wallet-paid)"
@@ -389,6 +362,16 @@ class TransmitNumber(models.Model):
         blank=True,
         help_text="The next scheduled renewal/charge date from TransmitSMS"
     )
+
+    class Meta:
+        # Ensure same number can't be duplicated for the same account
+        constraints = [
+            models.UniqueConstraint(
+                fields=['number', 'ghl_account'],
+                name='unique_number_per_account',
+                condition=models.Q(ghl_account__isnull=False)
+            )
+        ]
 
     def __str__(self):
         return f"{self.number} ({self.status})"

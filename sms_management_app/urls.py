@@ -44,4 +44,7 @@ urlpatterns = [
 
     path("numbers/remove/<str:location_id>/", RemoveNumberFromLocation.as_view(), name="remove_number_from_location"),
 
+    # Manual send queued messages
+    path("messages/send-queued/", SendQueuedMessagesAPIView.as_view(), name="send_queued_messages"),
+
 ]

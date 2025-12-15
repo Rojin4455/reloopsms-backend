@@ -10,6 +10,7 @@ class SMSMessageFilter(django_filters.FilterSet):
 
     # Foreign key filters
     ghl_account = django_filters.CharFilter(field_name="ghl_account__id", lookup_expr="exact")
+    location_id = django_filters.CharFilter(field_name="ghl_account__location_id", lookup_expr="exact")
     transmitsms_account = django_filters.CharFilter(field_name="transmit_account__id", lookup_expr="exact")
 
     class Meta:
@@ -20,5 +21,6 @@ class SMSMessageFilter(django_filters.FilterSet):
             "to_number",
             "from_number",
             "ghl_account",
+            "location_id",
             "transmitsms_account",
         ]

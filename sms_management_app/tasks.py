@@ -448,8 +448,8 @@ def sync_client_owned_numbers(self):
                     with transaction.atomic():
                         tn, created = TransmitNumber.objects.select_for_update().get_or_create(
                             number=msisdn,
+                            ghl_account=ghl_account,  # Add this to make it unique per account
                             defaults={
-                                "ghl_account": ghl_account,
                                 "price": price,
                                 "status": status,
                                 "is_active": True,

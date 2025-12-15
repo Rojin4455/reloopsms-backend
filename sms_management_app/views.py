@@ -1153,7 +1153,7 @@ class RegisterNumber(APIView):
                 )
 
             # ✅ Check if already owned
-            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+            if TransmitNumber.objects.filter(number=number, ghl_account=ghl_account, status='owned').exists():
                 return Response(
                     {"error": "This number is already owned."},
                     status=status.HTTP_400_BAD_REQUEST
@@ -1321,7 +1321,7 @@ class RequestPremiumNumber(APIView):
                 )
 
             # ✅ Check if already owned or requested
-            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+            if TransmitNumber.objects.filter(number=number, ghl_account=ghl_account, status="owned").exists():
                 return Response(
                     {"error": "This number is already owned."},
                     status=status.HTTP_400_BAD_REQUEST
@@ -1405,7 +1405,7 @@ class RegisterPremiumNumber(APIView):
                 )
 
             # ✅ Check if already owned
-            if TransmitNumber.objects.filter(number=number, status='owned').exists():
+            if TransmitNumber.objects.filter(number=number, ghl_account=ghl_account, status='owned').exists():
                 return Response(
                     {"error": "This number is already owned."},
                     status=status.HTTP_400_BAD_REQUEST
@@ -1555,6 +1555,164 @@ class RemoveNumberFromLocation(APIView):
             status=status.HTTP_200_OK
         )
     
+
+
+class SendQueuedMessagesAPIView(APIView):
+    """
+    API endpoint to manually send queued messages by providing a list of message IDs.
+    Accepts POST request with:
+    {
+        "message_ids": ["uuid1", "uuid2", ...],
+        "location_id": "optional_location_id"  # Optional: filter by location
+    }
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        message_ids = request.data.get("message_ids", [])
+        location_id = request.data.get("location_id")
+
+        if not message_ids:
+            return Response(
+                {"error": "message_ids is required and must be a non-empty list"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(message_ids, list):
+            return Response(
+                {"error": "message_ids must be a list"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get messages
+        try:
+            messages = SMSMessage.objects.filter(
+                id__in=message_ids,
+                status="queued"
+            )
+            
+            if location_id:
+                messages = messages.filter(ghl_account__location_id=location_id)
+            
+            if not messages.exists():
+                return Response(
+                    {"error": "No queued messages found with the provided IDs"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            results = {
+                "successful": [],
+                "failed": [],
+                "skipped": []
+            }
+
+            from sms_management_app.tasks import process_sms_message
+            from sms_management_app.services import GHLIntegrationService
+            from django.utils import timezone
+
+            for sms in messages:
+                try:
+                    wallet = Wallet.objects.get(account=sms.ghl_account)
+                    
+                    if sms.direction == "outbound":
+                        # Handle outbound messages
+                        try:
+                            cost, segments = wallet.charge_message(
+                                "outbound", 
+                                sms.message_content, 
+                                reference_id=sms.id
+                            )
+                            sms.cost = cost
+                            sms.segments = segments
+                            
+                            service = GHLIntegrationService()
+                            result = service.send_outbound_sms(sms, cost, segments)
+                            
+                            if result.get("success"):
+                                sms.status = "sent"
+                                sms.sent_at = timezone.now()
+                                sms.transmit_message_id = result.get("transmit_message_id")
+                                sms.save()
+                                results["successful"].append({
+                                    "message_id": str(sms.id),
+                                    "direction": "outbound",
+                                    "status": "sent"
+                                })
+                            else:
+                                # Refund if failed
+                                wallet.refund(
+                                    cost, 
+                                    reference_id=sms.id, 
+                                    description="Refund for failed queued SMS"
+                                )
+                                sms.status = "failed"
+                                sms.error_message = result.get("error", "Unknown error")
+                                sms.save()
+                                results["failed"].append({
+                                    "message_id": str(sms.id),
+                                    "direction": "outbound",
+                                    "error": result.get("error", "Unknown error")
+                                })
+                        except ValidationError as e:
+                            # Insufficient funds
+                            sms.status = "queued"
+                            sms.save()
+                            results["failed"].append({
+                                "message_id": str(sms.id),
+                                "direction": "outbound",
+                                "error": f"Insufficient balance: {str(e)}"
+                            })
+                        except Exception as e:
+                            sms.status = "failed"
+                            sms.error_message = str(e)
+                            sms.save()
+                            results["failed"].append({
+                                "message_id": str(sms.id),
+                                "direction": "outbound",
+                                "error": str(e)
+                            })
+
+                    elif sms.direction == "inbound":
+                        # Handle inbound messages - enqueue Celery task
+                        process_sms_message.delay(str(sms.id))
+                        results["successful"].append({
+                            "message_id": str(sms.id),
+                            "direction": "inbound",
+                            "status": "queued_for_processing"
+                        })
+                    else:
+                        results["skipped"].append({
+                            "message_id": str(sms.id),
+                            "reason": f"Unknown direction: {sms.direction}"
+                        })
+
+                except Wallet.DoesNotExist:
+                    results["failed"].append({
+                        "message_id": str(sms.id),
+                        "error": "Wallet not found for this account"
+                    })
+                except Exception as e:
+                    results["failed"].append({
+                        "message_id": str(sms.id),
+                        "error": str(e)
+                    })
+
+            return Response({
+                "message": f"Processed {len(messages)} messages",
+                "results": results,
+                "summary": {
+                    "total": len(messages),
+                    "successful": len(results["successful"]),
+                    "failed": len(results["failed"]),
+                    "skipped": len(results["skipped"])
+                }
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {"error": f"Error processing messages: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 def test_own_number(number, price, ghl_account):
