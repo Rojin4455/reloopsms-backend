@@ -84,3 +84,50 @@ class GHLService:
             else:
                 normalized[key] = value
         return normalized
+
+    def get_contact(self, contact_id):
+        """
+        Get a contact by ID from GHL.
+        
+        Args:
+            contact_id: The contact ID to retrieve
+            
+        Returns:
+            dict: Contact data if found, None otherwise
+        """
+        url = f"https://services.leadconnectorhq.com/contacts/{contact_id}"
+        try:
+            r = requests.get(url, headers=self.headers(), timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+        except Exception:
+            return None
+
+    def update_contact_custom_field(self, contact_id, custom_field_id, field_value):
+        """
+        Update a contact's custom field in GHL.
+        
+        Args:
+            contact_id: The contact ID to update
+            custom_field_id: The custom field ID to update
+            field_value: The value to set for the custom field
+            
+        Returns:
+            dict: Updated contact data if successful
+        """
+        url = f"https://services.leadconnectorhq.com/contacts/{contact_id}"
+        payload = {
+            "customFields": [
+                {
+                    "id": custom_field_id,
+                    "field_value": str(field_value)
+                }
+            ]
+        }
+        r = requests.put(url, json=payload, headers=self.headers(), timeout=30)
+        r.raise_for_status()
+        return r.json()

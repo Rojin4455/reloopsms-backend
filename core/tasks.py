@@ -118,6 +118,38 @@ def sync_all_wallets_with_ghl():
                     "premium_numbers": wallet.account.current_premium_purchased,
                 }
                 service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
+                
+                # After updating the record, update the contact's custom field if it exists
+                try:
+                    # Get the record to extract account_id
+                    record = service.get_record(wallet.ghl_object_id, MAIN_LOCATION_ID)
+                    if record:
+                        props = record.get("properties", {})
+                        account_id = props.get("account_id")
+                        
+                        if account_id:
+                            # Use the wallet's account location credentials to check/update contact
+                            location_creds = wallet.account
+                            if location_creds and location_creds.access_token:
+                                location_service = GHLService(access_token=location_creds.access_token)
+                                
+                                # Check if contact exists with that account_id
+                                contact = location_service.get_contact(account_id)
+                                
+                                if contact:
+                                    # Update the contact's custom field with cred_remaining value
+                                    CUSTOM_FIELD_ID = "32pWXPxvOxP5CGWZbaBZ"
+                                    location_service.update_contact_custom_field(
+                                        account_id,
+                                        CUSTOM_FIELD_ID,
+                                        f"{wallet.cred_remaining}"
+                                    )
+                                    print(f"✅ Updated contact {account_id} custom field with cred_remaining: {wallet.cred_remaining}")
+                                else:
+                                    print(f"⚠️ Contact {account_id} not found in location {location_creds.location_id}")
+                except Exception as contact_error:
+                    # Log contact update error but don't fail the whole task
+                    print(f"⚠️ Error updating contact custom field: {contact_error}")
         except Exception:
             # log exception and continue with next wallet
             continue
