@@ -96,15 +96,25 @@ class GHLService:
             dict: Contact data if found, None otherwise
         """
         url = f"https://services.leadconnectorhq.com/contacts/{contact_id}"
+        print(f"🔍 [get_contact] URL: {url}")
+        print(f"🔍 [get_contact] Contact ID: {contact_id}")
         try:
             r = requests.get(url, headers=self.headers(), timeout=30)
+            print(f"🔍 [get_contact] Response Status: {r.status_code}")
             r.raise_for_status()
-            return r.json()
+            contact_data = r.json()
+            print(f"🔍 [get_contact] Contact found: {contact_data}")
+            return contact_data
         except requests.exceptions.HTTPError as e:
+            print(f"🔍 [get_contact] HTTP Error: {e.response.status_code} - {e.response.text}")
             if e.response.status_code == 404:
+                print(f"🔍 [get_contact] Contact not found (404)")
                 return None
             raise
-        except Exception:
+        except Exception as e:
+            print(f"🔍 [get_contact] Exception: {e}")
+            import traceback
+            print(f"🔍 [get_contact] Traceback: {traceback.format_exc()}")
             return None
 
     def update_contact_custom_field(self, contact_id, custom_field_id, field_value):
@@ -119,6 +129,7 @@ class GHLService:
         Returns:
             dict: Updated contact data if successful
         """
+        import json
         url = f"https://services.leadconnectorhq.com/contacts/{contact_id}"
         payload = {
             "customFields": [
@@ -128,6 +139,20 @@ class GHLService:
                 }
             ]
         }
-        r = requests.put(url, json=payload, headers=self.headers(), timeout=30)
-        r.raise_for_status()
-        return r.json()
+        print(f"✏️ [update_contact_custom_field] URL: {url}")
+        print(f"✏️ [update_contact_custom_field] Payload: {json.dumps(payload, indent=2)}")
+        print(f"✏️ [update_contact_custom_field] Headers: {json.dumps({k: v for k, v in self.headers().items() if k != 'Authorization'}, indent=2)}")
+        
+        try:
+            r = requests.put(url, json=payload, headers=self.headers(), timeout=30)
+            print(f"✏️ [update_contact_custom_field] Response Status: {r.status_code}")
+            print(f"✏️ [update_contact_custom_field] Response: {r.text}")
+            r.raise_for_status()
+            result = r.json()
+            print(f"✏️ [update_contact_custom_field] Success! Result: {json.dumps(result, indent=2)}")
+            return result
+        except Exception as e:
+            print(f"✏️ [update_contact_custom_field] Exception: {e}")
+            import traceback
+            print(f"✏️ [update_contact_custom_field] Traceback: {traceback.format_exc()}")
+            raise
