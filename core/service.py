@@ -42,6 +42,42 @@ class GHLService:
                 return rec
         return None
 
+    def get_record_by_id(self, record_id):
+        """
+        Get a record directly by ID using GET endpoint.
+        
+        Args:
+            record_id: The record ID to retrieve
+            
+        Returns:
+            dict: Record data if found, None otherwise
+        """
+        import json
+        url = f"{GHL_BASE_URL}/records/{record_id}"
+        print(f"📋 [get_record_by_id] URL: {url}")
+        print(f"📋 [get_record_by_id] Record ID: {record_id}")
+        try:
+            r = requests.get(url, headers=self.headers(), timeout=30)
+            print(f"📋 [get_record_by_id] Response Status: {r.status_code}")
+            r.raise_for_status()
+            response_data = r.json()
+            print(f"📋 [get_record_by_id] Response: {json.dumps(response_data, indent=2)}")
+            # Extract the record from the response
+            record = response_data.get("record")
+            print(f"📋 [get_record_by_id] Record extracted: {record is not None}")
+            return record
+        except requests.exceptions.HTTPError as e:
+            print(f"📋 [get_record_by_id] HTTP Error: {e.response.status_code} - {e.response.text}")
+            if e.response.status_code == 404:
+                print(f"📋 [get_record_by_id] Record not found (404)")
+                return None
+            raise
+        except Exception as e:
+            print(f"📋 [get_record_by_id] Exception: {e}")
+            import traceback
+            print(f"📋 [get_record_by_id] Traceback: {traceback.format_exc()}")
+            return None
+
 
     def update_record(self, record_id, main_location_id, payload):
         import json

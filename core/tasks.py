@@ -89,7 +89,7 @@ def sync_all_wallets_with_ghl():
 
     service = GHLService(access_token=main_creds.access_token)
 
-    for wallet in Wallet.objects.select_related("account").all():
+    for wallet in Wallet.objects.select_related("account").all()[2:3]:
         try:
           
            if wallet.ghl_object_id:
@@ -118,13 +118,14 @@ def sync_all_wallets_with_ghl():
                     "premium_numbers": wallet.account.current_premium_purchased,
                 }
                 service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
+                main_location = GHLAuthCredentials.objects.get(location_id=MAIN_LOCATION_ID)
                 
                 # After updating the record, update the contact's custom field if it exists
                 print(f"\n===== Starting Contact Custom Field Update for Wallet {wallet.id} =====")
                 try:
                     # Get the record to extract account_id
                     print(f"📋 Step 1: Getting record with ID: {wallet.ghl_object_id}")
-                    record = service.get_record(wallet.ghl_object_id, MAIN_LOCATION_ID)
+                    record = service.get_record_by_id(wallet.ghl_object_id)
                     print(f"📋 Step 1 Result: Record found: {record is not None}")
                     
                     if record:
@@ -135,16 +136,15 @@ def sync_all_wallets_with_ghl():
                         print(f"📋 Step 2 Result: account_id = {account_id}")
                         
                         if account_id:
-                            # Use the wallet's account location credentials to check/update contact
-                            print(f"📋 Step 3: Getting location credentials from wallet.account")
-                            location_creds = wallet.account
-                            print(f"📋 Step 3 Result: location_creds = {location_creds}")
-                            print(f"📋 location_creds.location_id = {location_creds.location_id if location_creds else 'None'}")
-                            print(f"📋 location_creds.access_token exists = {bool(location_creds and location_creds.access_token)}")
+                            # Use the main location credentials to check/update contact
+                            print(f"📋 Step 3: Using main location credentials")
+                            print(f"📋 Step 3 Result: main_location = {main_location}")
+                            print(f"📋 main_location.location_id = {main_location.location_id if main_location else 'None'}")
+                            print(f"📋 main_location.access_token exists = {bool(main_location and main_location.access_token)}")
                             
-                            if location_creds and location_creds.access_token:
-                                print(f"📋 Step 4: Creating GHLService with location access token")
-                                location_service = GHLService(access_token=location_creds.access_token)
+                            if main_location and main_location.access_token:
+                                print(f"📋 Step 4: Creating GHLService with main location access token")
+                                location_service = GHLService(access_token=main_location.access_token)
                                 print(f"📋 Step 4 Result: GHLService created successfully")
                                 
                                 # Check if contact exists with that account_id
@@ -169,12 +169,12 @@ def sync_all_wallets_with_ghl():
                                     )
                                     print(f"✅ Step 6 Result: Successfully updated contact {account_id} custom field with cred_remaining: {wallet.cred_remaining}")
                                 else:
-                                    print(f"⚠️ Step 5 Result: Contact {account_id} not found in location {location_creds.location_id}")
+                                    print(f"⚠️ Step 5 Result: Contact {account_id} not found in main location {main_location.location_id}")
                             else:
-                                print(f"⚠️ Step 3 Result: Missing location_creds or access_token")
-                                print(f"⚠️ location_creds = {location_creds}")
-                                if location_creds:
-                                    print(f"⚠️ access_token exists = {bool(location_creds.access_token)}")
+                                print(f"⚠️ Step 3 Result: Missing main_location or access_token")
+                                print(f"⚠️ main_location = {main_location}")
+                                if main_location:
+                                    print(f"⚠️ access_token exists = {bool(main_location.access_token)}")
                         else:
                             print(f"⚠️ Step 2 Result: account_id is None or empty")
                     else:
