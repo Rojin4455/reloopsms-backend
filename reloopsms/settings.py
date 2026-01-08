@@ -178,7 +178,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     'sync_all_wallets_with_ghl': {
         'task': 'core.tasks.sync_all_wallets_with_ghl',
-        'schedule': timedelta(minutes=5),
+        'schedule': timedelta(minutes=20),
     },
     'make-api-call-for-sync_numbers': {
         'task': 'sms_management_app.tasks.charge_due_transmit_numbers',

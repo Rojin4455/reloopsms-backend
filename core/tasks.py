@@ -89,7 +89,7 @@ def sync_all_wallets_with_ghl():
 
     service = GHLService(access_token=main_creds.access_token)
 
-    for wallet in Wallet.objects.select_related("account").all()[2:3]:
+    for wallet in Wallet.objects.select_related("account").all():
         try:
           
            if wallet.ghl_object_id:
@@ -117,68 +117,42 @@ def sync_all_wallets_with_ghl():
                     "max_standard_numbers": wallet.account.max_standard_numbers,
                     "premium_numbers": wallet.account.current_premium_purchased,
                 }
-                service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
+                update_response = service.update_record(wallet.ghl_object_id,MAIN_LOCATION_ID,payload)
                 main_location = GHLAuthCredentials.objects.get(location_id=MAIN_LOCATION_ID)
                 
                 # After updating the record, update the contact's custom field if it exists
                 print(f"\n===== Starting Contact Custom Field Update for Wallet {wallet.id} =====")
                 try:
-                    # Get the record to extract account_id
-                    print(f"📋 Step 1: Getting record with ID: {wallet.ghl_object_id}")
-                    record = service.get_record_by_id(wallet.ghl_object_id)
-                    print(f"📋 Step 1 Result: Record found: {record is not None}")
+                    # Extract account_id from the update_record response
+                    print(f"📋 Step 1: Extracting account_id from update_record response")
+                    # Handle different response structures (could be directly the record or wrapped in "record")
+                    record = update_response.get("record") if isinstance(update_response, dict) and "record" in update_response else update_response
+                    props = record.get("properties", {}) if record and isinstance(record, dict) else {}
+                    account_id = props.get("account_id")
+                    print(f"📋 Step 1 Result: account_id = {account_id}")
                     
-                    if record:
-                        props = record.get("properties", {})
-                        print(f"📋 Step 2: Extracting account_id from record properties")
-                        print(f"📋 Record properties keys: {list(props.keys())}")
-                        account_id = props.get("account_id")
-                        print(f"📋 Step 2 Result: account_id = {account_id}")
-                        
-                        if account_id:
-                            # Use the main location credentials to check/update contact
-                            print(f"📋 Step 3: Using main location credentials")
-                            print(f"📋 Step 3 Result: main_location = {main_location}")
-                            print(f"📋 main_location.location_id = {main_location.location_id if main_location else 'None'}")
-                            print(f"📋 main_location.access_token exists = {bool(main_location and main_location.access_token)}")
+                    if account_id:
+                        if main_location and main_location.access_token:
+                            print(f"📋 Step 2: Creating GHLService with main location access token")
+                            location_service = GHLService(access_token=main_location.access_token)
                             
-                            if main_location and main_location.access_token:
-                                print(f"📋 Step 4: Creating GHLService with main location access token")
-                                location_service = GHLService(access_token=main_location.access_token)
-                                print(f"📋 Step 4 Result: GHLService created successfully")
-                                
-                                # Check if contact exists with that account_id
-                                print(f"📋 Step 5: Checking if contact exists with account_id: {account_id}")
-                                contact = location_service.get_contact(account_id)
-                                print(f"📋 Step 5 Result: Contact found: {contact is not None}")
-                                if contact:
-                                    print(f"📋 Contact data: {contact}")
-                                
-                                if contact:
-                                    # Update the contact's custom field with cred_remaining value
-                                    CUSTOM_FIELD_ID = "32pWXPxvOxP5CGWZbaBZ"
-                                    print(f"📋 Step 6: Updating contact custom field")
-                                    print(f"📋 Contact ID: {account_id}")
-                                    print(f"📋 Custom Field ID: {CUSTOM_FIELD_ID}")
-                                    print(f"📋 Field Value: {wallet.cred_remaining} (type: {type(wallet.cred_remaining)})")
-                                    
-                                    location_service.update_contact_custom_field(
-                                        account_id,
-                                        CUSTOM_FIELD_ID,
-                                        f"{wallet.cred_remaining}"
-                                    )
-                                    print(f"✅ Step 6 Result: Successfully updated contact {account_id} custom field with cred_remaining: {wallet.cred_remaining}")
-                                else:
-                                    print(f"⚠️ Step 5 Result: Contact {account_id} not found in main location {main_location.location_id}")
-                            else:
-                                print(f"⚠️ Step 3 Result: Missing main_location or access_token")
-                                print(f"⚠️ main_location = {main_location}")
-                                if main_location:
-                                    print(f"⚠️ access_token exists = {bool(main_location.access_token)}")
+                            # Update the contact's custom field with cred_remaining value
+                            CUSTOM_FIELD_ID = "32pWXPxvOxP5CGWZbaBZ"
+                            print(f"📋 Step 3: Updating contact custom field")
+                            print(f"📋 Contact ID: {account_id}")
+                            print(f"📋 Custom Field ID: {CUSTOM_FIELD_ID}")
+                            print(f"📋 Field Value: {wallet.cred_remaining} (type: {type(wallet.cred_remaining)})")
+                            
+                            location_service.update_contact_custom_field(
+                                account_id,
+                                CUSTOM_FIELD_ID,
+                                f"{wallet.cred_remaining}"
+                            )
+                            print(f"✅ Step 3 Result: Successfully updated contact {account_id} custom field with cred_remaining: {wallet.cred_remaining}")
                         else:
-                            print(f"⚠️ Step 2 Result: account_id is None or empty")
+                            print(f"⚠️ Step 2 Result: Missing main_location or access_token")
                     else:
-                        print(f"⚠️ Step 1 Result: Record not found for ghl_object_id: {wallet.ghl_object_id}")
+                        print(f"⚠️ Step 1 Result: account_id is None or empty in update_record response")
                 except Exception as contact_error:
                     # Log contact update error but don't fail the whole task
                     import traceback
