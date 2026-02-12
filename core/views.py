@@ -1,7 +1,7 @@
 import requests
 import json
 from django.shortcuts import render
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from decouple import config
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import csrf_exempt
@@ -329,6 +329,48 @@ class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = GHLAuthCredentials.objects.all()
     serializer_class = GHLAuthCredentialsSerializer
     permission_classes = [IsAdminUser]
+
+ORDERS_WEBHOOK_URL = "https://ttillpgzclaggdureeka.supabase.co/functions/v1/orders-webhook"
+
+
+@csrf_exempt
+def orders_webhook(request):
+    """
+    Webhook that forwards incoming payload to the external orders webhook
+    and returns the external webhook response as-is.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        # Forward the same body we received
+        body = request.body
+        content_type = request.content_type or "application/json"
+        headers = {
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        }
+        resp = requests.post(
+            ORDERS_WEBHOOK_URL,
+            data=body,
+            headers=headers,
+            timeout=30,
+        )
+        # Return the same status and body we got from the external webhook
+        response = HttpResponse(
+            resp.content,
+            status=resp.status_code,
+            content_type=resp.headers.get("Content-Type", "application/json"),
+        )
+        return response
+    except requests.RequestException as e:
+        return JsonResponse(
+            {"error": "External webhook request failed", "detail": str(e)},
+            status=502,
+        )
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
 
 @csrf_exempt
 def webhook_handler(request):

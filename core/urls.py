@@ -34,6 +34,7 @@ urlpatterns = [
     path('ghl-auth-credentials/', GHLAuthCredentialsListView.as_view(), name='ghl-auth-credentials-list'),
     path('ghl-auth-credentials/<str:pk>/', GHLAuthCredentialsDetailView.as_view(), name='ghl-auth-credentials-detail'),
     path('test-provider', webhook_handler, name='test-provider'),
+    path('webhook/orders/', orders_webhook, name='orders_webhook'),
 
     path('wallet-summary/', WalletSummaryView.as_view()),
 
