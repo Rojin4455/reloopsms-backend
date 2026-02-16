@@ -37,8 +37,9 @@ from .models import StripeCustomerData
 from django.conf import settings
 
 
-stripe.api_key = settings.STRIPE_TEST_API_KEY
-# stripe.api_key = settings.STRIPE_LIVE_API_KEY
+stripe.api_key = (
+    settings.STRIPE_TEST_API_KEY if settings.DEBUG else settings.STRIPE_LIVE_API_KEY
+)
 
 
 # Create your views here.
