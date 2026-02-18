@@ -21,6 +21,7 @@ urlpatterns = [
     #messages list
     path('sms-messages/', SMSMessageListView.as_view(), name='sms-message-list'),
     path("wallet/<str:location_id>/add-funds/", wallet_adjust_funds, name="wallet_add_funds"),
+    path("wallet/recharge/", wallet_recharge_from_form, name="wallet_recharge_from_form"),
     path("dashboard/analytics/", DashboardAnalyticsView.as_view(), name="dashboard-analytics"),
 
     path("ghl-account/dashboard/", GHLAccountDashboardAPIView.as_view(), name="ghl-dashboard"),

@@ -1,6 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse
 import json
+import re
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, status
 from rest_framework.response import Response
@@ -430,7 +431,79 @@ def wallet_adjust_funds(request, location_id):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
-    
+
+
+def _parse_sms_credit_recharge_amount(recharge_text):
+    """
+    Parse the credit amount from strings like '$30.00 Credit + $1 Card Fee'.
+    Returns the first dollar amount (the credit), not the card fee.
+    """
+    if not recharge_text:
+        return None
+    amounts = re.findall(r"\$([\d\.]+)", str(recharge_text))
+    return float(amounts[0]) if amounts else None
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def wallet_recharge_from_form(request):
+    """
+    Dedicated endpoint for SMS recharge form payload (e.g. GHL form submission).
+    Does not change the existing wallet add-funds endpoint.
+
+    Expected JSON body:
+      {
+        "SMS Recharge LocationID": "gKnZUcMflBkB0OAHZiZe",
+        "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee",
+        "workflow": { "id": "...", "name": "..." }
+      }
+    Uses the first $ amount in "SMS Credit Recharge" as the credit (e.g. 30).
+    Recharges the wallet for the given location.
+    """
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+        location_id = data.get("SMS Recharge LocationID")
+        if not location_id:
+            return JsonResponse(
+                {"error": "SMS Recharge LocationID is required"},
+                status=400,
+            )
+        recharge_text = data.get("SMS Credit Recharge")
+        if not recharge_text:
+            return JsonResponse(
+                {"error": "SMS Credit Recharge is required"},
+                status=400,
+            )
+        amount_value = _parse_sms_credit_recharge_amount(recharge_text)
+        if amount_value is None or amount_value <= 0:
+            return JsonResponse(
+                {"error": "Could not parse a valid credit amount from SMS Credit Recharge"},
+                status=400,
+            )
+        amount = Decimal(str(amount_value))
+        workflow = data.get("workflow") or {}
+        reference_id = workflow.get("id") or workflow.get("name")
+
+        try:
+            account = GHLAuthCredentials.objects.get(location_id=location_id)
+        except GHLAuthCredentials.DoesNotExist:
+            return JsonResponse({"error": "GHL account not found"}, status=404)
+
+        wallet, _ = Wallet.objects.get_or_create(account=account)
+        new_balance = wallet.add_funds(amount, reference_id=reference_id)
+
+        return JsonResponse({
+            "message": "Wallet recharged successfully",
+            "location_id": location_id,
+            "amount": str(amount),
+            "new_balance": str(new_balance),
+            "reference_id": reference_id,
+        })
+    except json.JSONDecodeError as e:
+        return JsonResponse({"error": "Invalid JSON", "detail": str(e)}, status=400)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
 
 from django.utils import timezone
 from datetime import timedelta
