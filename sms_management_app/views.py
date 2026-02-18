@@ -462,6 +462,7 @@ def wallet_recharge_from_form(request):
     """
     try:
         data = json.loads(request.body.decode("utf-8"))
+        print("Wallet recharge from form data:", data)
         location_id = data.get("SMS Recharge LocationID")
         if not location_id:
             return JsonResponse(
