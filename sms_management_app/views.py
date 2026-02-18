@@ -378,6 +378,7 @@ def wallet_adjust_funds(request, location_id):
     """
     try:
         data = json.loads(request.body.decode("utf-8"))
+        print("Wallet adjust funds data:", data)
         if "payment" in data:
             payment_data = data["payment"]
             reference_id = payment_data.get("transaction_id")
