@@ -10,7 +10,7 @@ from .models import GHLTransmitSMSMapping
 from core.models import GHLAuthCredentials, Wallet, WalletTransaction,TransmitNumber
 from transmitsms.models import TransmitSMSAccount
 from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer, WalletTransactionSerializer, WalletSerializer, MappingSerializer,TransmitNumberSerializer
-from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status
+from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status, process_mms_inbound_message
 from django.core.exceptions import ValidationError
 
 from rest_framework.generics import ListAPIView
@@ -221,6 +221,11 @@ def transmit_dlr_callback(request):
 
         # Log webhook
         WebhookLog.objects.create(webhook_type='transmit_dlr', raw_data=data)
+
+        # MMS_INBOUND: route to inbound handler (same URL as DLR)
+        if data.get("event_type") == "MMS_INBOUND":
+            process_mms_inbound_message.delay(data)
+            return JsonResponse({"message": "MMS inbound received"}, status=200)
 
         sms_message, mapped_status = _process_dlr_payload(data)
         if sms_message and mapped_status:

@@ -287,6 +287,147 @@ def process_sms_message(self, sms_id: str):
         raise self.retry(exc=e)
 
 
+@shared_task(rate_limit="9/s", bind=True, max_retries=3, default_retry_delay=5)
+def process_mms_inbound_message(self, payload: dict):
+    """
+    Process inbound MMS from TransmitSMS (MMS_INBOUND event).
+    Look up GHL account by webhook_id, create SMSMessage, push to GHL with attachments.
+    """
+    import base64
+    from transmitsms.models import TransmitSMSMMSWebhook
+    from core.models import Wallet
+
+    try:
+        event_type = payload.get("event_type")
+        if event_type != "MMS_INBOUND":
+            return f"Skipped: not MMS_INBOUND (got {event_type})"
+
+        webhook_id = payload.get("webhook_id")
+        if not webhook_id:
+            logger.error("MMS_INBOUND: missing webhook_id")
+            return "MMS_INBOUND: missing webhook_id"
+
+        mms_config = TransmitSMSMMSWebhook.objects.select_related("transmit_account").get(webhook_id=webhook_id)
+        transmit_account = mms_config.transmit_account
+
+        mapping = GHLTransmitSMSMapping.objects.select_related("ghl_account").get(transmit_account=transmit_account)
+        ghl_account = mapping.ghl_account
+
+        mo = payload.get("mo") or {}
+        sender = mo.get("sender", "")
+        recipient = mo.get("recipient", "")
+        message_text = mo.get("message", "")
+        transmit_msg_id = mo.get("id", "")
+
+        # Resolve conversation/contact from last_message (reply within 72h)
+        last_msg = mo.get("last_message") or {}
+        message_ref = last_msg.get("message_ref")  # ghl_message_id of our last outbound
+
+        ghl_conversation_id = None
+        ghl_contact_id = None
+        if message_ref:
+            try:
+                prev = SMSMessage.objects.get(ghl_message_id=message_ref, ghl_account=ghl_account)
+                ghl_conversation_id = prev.ghl_conversation_id
+                ghl_contact_id = prev.ghl_contact_id
+            except SMSMessage.DoesNotExist:
+                pass
+
+        if not ghl_conversation_id:
+            logger.warning(f"MMS_INBOUND: no conversation found for message_ref={message_ref}, cannot push to GHL")
+            return "MMS_INBOUND: no conversation/contact found, message_ref required for replies"
+
+        # Create inbound SMSMessage record
+        sms = SMSMessage.objects.create(
+            ghl_account=ghl_account,
+            transmit_account=transmit_account,
+            message_content=message_text,
+            to_number=recipient,
+            from_number=sender,
+            direction="inbound",
+            ghl_conversation_id=ghl_conversation_id,
+            ghl_contact_id=ghl_contact_id,
+            transmit_message_id=transmit_msg_id,
+            status="queued",
+        )
+
+        # Charge wallet for inbound MMS
+        wallet = Wallet.objects.get(account=ghl_account)
+        try:
+            cost, segments = wallet.charge_message("inbound", message_text or " ", reference_id=sms.id)
+            sms.cost = cost
+            sms.segments = segments
+            sms.save()
+        except ValidationError:
+            sms.status = "queued"
+            sms.save()
+            return f"MMS {sms.id} queued (insufficient balance)"
+
+        headers = {
+            "Authorization": f"Bearer {ghl_account.access_token}",
+            "Version": "2021-04-15",
+            "Accept": "application/json",
+        }
+
+        attachments = []
+        media_list = mo.get("media") or []
+        for m in media_list:
+            name = m.get("name", "attachment")
+            b64 = m.get("content")
+            if not b64:
+                continue
+            try:
+                upload_url = "https://services.leadconnectorhq.com/conversations/messages/upload"
+                file_data = base64.b64decode(b64)
+                resp = requests.post(
+                    upload_url,
+                    headers={k: v for k, v in headers.items() if k.lower() != "content-type"},
+                    data={"conversationId": ghl_conversation_id},
+                    files={"fileAttachment": (name, file_data)},
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    url = data.get("url") or data.get("fileUrl") or (data.get("attachments", [{}])[0].get("url") if data.get("attachments") else None)
+                    if url:
+                        attachments.append(url)
+            except Exception as e:
+                logger.warning(f"MMS media upload failed for {name}: {e}")
+
+        # Push to GHL inbound
+        inbound_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
+        inbound_payload = {
+            "type": "SMS",
+            "message": message_text,
+            "conversationId": ghl_conversation_id,
+            "conversationProviderId": "68dbda8a5f1dda4f65d4625f",
+        }
+        if attachments:
+            inbound_payload["attachments"] = attachments
+
+        resp = requests.post(inbound_url, json=inbound_payload, headers={**headers, "Content-Type": "application/json"})
+        resp_data = resp.json() if resp.text else {}
+
+        if resp.status_code in (200, 201):
+            sms.status = "delivered"
+            sms.sent_at = timezone.now()
+            sms.save()
+            return f"MMS {sms.id} delivered to GHL"
+        else:
+            wallet.refund(sms.cost, reference_id=str(sms.id), description="Refund: MMS inbound failed to push to GHL")
+            sms.status = "failed"
+            sms.error_message = resp_data.get("error") or str(resp_data) or resp.text
+            sms.save()
+            return f"MMS {sms.id} failed: {sms.error_message}"
+
+    except TransmitSMSMMSWebhook.DoesNotExist:
+        logger.error(f"MMS_INBOUND: no MMSWebhookConfig for webhook_id={webhook_id}")
+        return f"MMS_INBOUND: webhook_id {webhook_id} not configured"
+    except GHLTransmitSMSMapping.DoesNotExist:
+        logger.error(f"MMS_INBOUND: no GHL mapping for transmit account")
+        return "MMS_INBOUND: no GHL mapping"
+    except Exception as e:
+        logger.exception(f"process_mms_inbound_message error: {e}")
+        raise self.retry(exc=e)
 
 
 from decimal import Decimal
