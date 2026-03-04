@@ -340,8 +340,75 @@ class TransmitSMSService:
             print("❌ SMS sending failed:", result)
 
         return result
-    
 
+    def send_mms(
+        self,
+        content_urls,
+        recipient,
+        sender,
+        message_ref,
+        transmit_account,
+        message="",
+        subject="",
+        track_links=True,
+    ):
+        """
+        Send MMS via TransmitSMS v2 API.
+        API docs: https://api.transmitmessage.com/v2/mms
+
+        Args:
+            content_urls: List of absolute URLs for media (jpg, gif, png, MP3, MP4)
+            recipient: Destination number (E.164 format)
+            sender: Sending number (E.164 format)
+            message_ref: Reference passed back in webhooks (use GHL messageId for mapping)
+            transmit_account: TransmitSMSAccount with api_key
+            message: Optional text message (max 1000 chars)
+            subject: Optional subject (max 20 chars)
+            track_links: Whether to track links
+
+        Returns:
+            dict: {'success': bool, 'data': response, 'message_id': str} or {'success': False, 'error': str}
+        """
+        url = "https://api.transmitmessage.com/v2/mms"
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "x-api-key": transmit_account.api_key,
+        }
+
+        recipient = format_international(recipient)
+        sender = format_international(sender)
+
+        payload = {
+            "content_urls": content_urls,
+            "recipient": recipient,
+            "sender": sender,
+            "message_ref": message_ref,
+            "message": message[:1000] if message else "",
+            "subject": (subject or "MMS")[:20],
+            "track_links": track_links,
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            print(f"➡️ MMS request: {url}")
+            print(f"⬅️ MMS Response [{response.status_code}]: {response.text[:500]}")
+
+            response.raise_for_status()
+            result = response.json()
+            return {
+                "success": True,
+                "data": result,
+                "message_id": result.get("id"),
+            }
+        except requests.exceptions.RequestException as e:
+            err_text = getattr(e.response, "text", None) if hasattr(e, "response") else None
+            print(f"❌ MMS send failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "response_text": err_text,
+            }
 
     def get_dedicated_numbers(self, filter_type="owned", page=1, max_results=10, api_key=None, api_secret=None):
         """
@@ -549,22 +616,24 @@ class GHLIntegrationService:
         return mapping
 
     def process_ghl_message(self, webhook_data):
-        """Process incoming message from GHL and send via TransmitSMS"""
+        """Process incoming message from GHL and send via TransmitSMS (SMS or MMS)."""
         try:
             print("🔹 Received webhook_data:", webhook_data)
 
             # Extract data from GHL webhook
             location_id = webhook_data.get('locationId')
-            message_content = webhook_data.get('message')
+            message_content = webhook_data.get('message') or ''
             to_number = webhook_data.get('phone')
             message_id = webhook_data.get('messageId')
             conversation_id = webhook_data.get('conversationId')
             contact_id = webhook_data.get('contactId')
-            # print(f"📌 Extracted: location_id={location_id}, to_number={to_number}, message_id={message_id}")
+            attachments = webhook_data.get('attachments') or []
+
+            # Detect MMS: has attachments (GHL sends type 'SMS' but with attachments = MMS)
+            is_mms = bool(attachments)
 
             # Find GHL account
             ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
-            # print("✅ Found GHL account:", ghl_account)
 
             wallet, _ = Wallet.objects.get_or_create(account=ghl_account)
 
@@ -576,13 +645,19 @@ class GHLIntegrationService:
                 print("❌ No mapping found for location:", location_id)
                 raise Exception(f"No TransmitSMS account mapped for GHL location {location_id}")
 
-            # Create SMS message record first
+            # Get sender number (dedicated or account default)
+            from_number = transmit_account.phone_number
+            if not is_mms:
+                # For SMS, dedicated number is resolved inside send_sms
+                pass
+
+            # Create message record (same model for SMS and MMS)
             sms_message = SMSMessage.objects.create(
                 ghl_account=ghl_account,
                 transmit_account=transmit_account,
                 message_content=message_content,
                 to_number=to_number,
-                from_number=transmit_account.phone_number,
+                from_number=from_number,
                 direction='outbound',
                 ghl_message_id=message_id,
                 ghl_conversation_id=conversation_id,
@@ -590,16 +665,17 @@ class GHLIntegrationService:
                 status='pending'
             )
 
-            # Charge wallet (for outbound SMS)
+            # Charge wallet: for MMS use at least 1 segment; for SMS use message length
+            charge_content = message_content if message_content else " "
             try:
-                cost, segments = wallet.charge_message("outbound", message_content, reference_id=sms_message.id)
+                cost, segments = wallet.charge_message("outbound", charge_content, reference_id=sms_message.id)
                 sms_message.cost = cost
                 sms_message.segments = segments
                 sms_message.save(update_fields=["cost", "segments"])
             except ValidationError as e:
                 sms_message.status = "queued"
                 sms_message.cost = 0
-                sms_message.segments = (len(message_content) // 160) + 1
+                sms_message.segments = max(1, (len(charge_content) // 160) + 1)
                 sms_message.save(update_fields=["status", "cost", "segments"])
 
                 return {
@@ -608,55 +684,83 @@ class GHLIntegrationService:
                     "message_id": sms_message.id,
                 }
 
-            # Prepare callback URLs
-            dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
-            reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
-            print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
+            cost = sms_message.cost
 
-            # Send SMS via TransmitSMS
-            print("📤 Sending SMS via TransmitSMS...")
-            result = self.transmit_service.send_sms(               
-                message=message_content,
-                to_number=to_number,
-                from_number=transmit_account.phone_number,
-                transmit_account=transmit_account,
-                dlr_callback=dlr_callback,
-                reply_callback=reply_callback,
-                sms_message=sms_message,
-            )
+            if is_mms:
+                # --- MMS path ---
+                # Resolve sender (dedicated number) if available
+                try:
+                    dedicated_response = self.transmit_service.get_dedicated_numbers(
+                        filter_type="owned",
+                        api_key=transmit_account.api_key,
+                        api_secret=transmit_account.api_secret,
+                    )
+                    if dedicated_response.get("success"):
+                        numbers = dedicated_response.get("data", {}).get("numbers", [])
+                        if numbers and numbers[0].get("number"):
+                            from_number = numbers[0]["number"]
+                            sms_message.from_number = from_number
+                            sms_message.save(update_fields=["from_number"])
+                except Exception as e:
+                    print(f"[INFO] Could not fetch dedicated number for MMS: {e}")
+
+                print("📤 Sending MMS via TransmitSMS v2 API...")
+                result = self.transmit_service.send_mms(
+                    content_urls=attachments,
+                    recipient=to_number,
+                    sender=from_number,
+                    message_ref=message_id,
+                    transmit_account=transmit_account,
+                    message=message_content,
+                    subject="MMS"[:20],
+                    track_links=True,
+                )
+            else:
+                # --- SMS path (unchanged) ---
+                dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
+                reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
+                print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
+                print("📤 Sending SMS via TransmitSMS...")
+                result = self.transmit_service.send_sms(
+                    message=message_content,
+                    to_number=to_number,
+                    from_number=transmit_account.phone_number,
+                    transmit_account=transmit_account,
+                    dlr_callback=dlr_callback,
+                    reply_callback=reply_callback,
+                    sms_message=sms_message,
+                )
+
             print("📩 TransmitSMS response:", result)
 
             if result['success']:
-                sms_message.transmit_message_id = result.get('message_id')
+                sms_message.transmit_message_id = str(result.get('message_id', ''))
                 sms_message.status = 'sent'
                 sms_message.sent_at = timezone.now()
                 sms_message.save()
-                # print("✅ SMS sent successfully:", sms_message.id)
 
                 return {
                     'success': True,
                     'message_id': sms_message.id,
-                    'transmit_message_id': result.get('message_id')
+                    'transmit_message_id': result.get('message_id'),
                 }
             else:
-                # Refund cost if failed to send
-                wallet.refund(cost, reference_id=sms_message.id, description='Refund because of sms failed to send.')
-                
+                wallet.refund(cost, reference_id=sms_message.id, description='Refund: message failed to send.')
                 sms_message.status = 'failed'
-                sms_message.error_message = result['error']
+                sms_message.error_message = result.get('error', 'Unknown error')
                 sms_message.save()
-                print("❌ SMS sending failed:", result['error'])
+                print("❌ Send failed:", result.get('error'))
 
                 return {
                     'success': False,
-                    'error': result['error']
+                    'error': result.get('error', 'Unknown error'),
                 }
 
         except Exception as e:
             print("🔥 Exception occurred:", str(e))
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
             }
 
     def send_outbound_sms(self, sms_message, cost, segments):

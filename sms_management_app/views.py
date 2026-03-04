@@ -139,18 +139,77 @@ def ghl_webhook_handler(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
+def _process_dlr_payload(data):
+    """Process DLR payload (SMS or MMS format) and return (sms_message, mapped_status) or (None, None)."""
+    event_type = data.get("event_type")
+
+    # MMS_STATUS format: { event_type: "MMS_STATUS", status: { message_ref, status, ... } }
+    if event_type == "MMS_STATUS":
+        status_obj = data.get("status") or {}
+        message_ref = status_obj.get("message_ref")
+        raw_status = (status_obj.get("status") or "").upper()
+
+        if not message_ref:
+            print("MMS DLR: missing message_ref")
+            return None, None
+
+        try:
+            sms_message = SMSMessage.objects.get(ghl_message_id=message_ref)
+        except SMSMessage.DoesNotExist:
+            print(f"MMS DLR: SMSMessage not found for message_ref={message_ref}")
+            return None, None
+
+        sms_message.delivery_status = json.dumps(data)
+        sms_message.transmit_message_id = sms_message.transmit_message_id or status_obj.get("id", "")
+
+        if raw_status in ("DELIVERED", "SUCCESS"):
+            mapped = "delivered"
+        elif raw_status in ("SENT", "PENDING"):
+            mapped = "sent"
+        elif raw_status in ("FAILED", "ERROR", "HARD-BOUNCE", "SOFT-BOUNCE"):
+            mapped = "failed"
+        elif raw_status == "EXPIRED":
+            mapped = "expired"
+        else:
+            mapped = "sent"
+
+        return sms_message, mapped
+    else:
+        # Legacy SMS DLR format: message_id (transmit_message_id), status
+        message_id = data.get("message_id")
+        raw_status = (data.get("status") or "").lower()
+
+        if not message_id:
+            return None, None
+
+        try:
+            sms_message = SMSMessage.objects.get(transmit_message_id=message_id)
+        except SMSMessage.DoesNotExist:
+            print(f"SMS DLR: SMSMessage not found for transmit_message_id={message_id}")
+            return None, None
+
+        sms_message.delivery_status = json.dumps(data)
+
+        if raw_status in ("delivered", "success"):
+            mapped = "delivered"
+        elif raw_status in ("failed", "error", "hard-bounce", "soft-bounce"):
+            mapped = "failed"
+        elif raw_status == "expired":
+            mapped = "expired"
+        else:
+            mapped = "sent"
+
+        return sms_message, mapped
+
+
 @csrf_exempt
 def transmit_dlr_callback(request):
-    """Handle delivery receipt callbacks from TransmitSMS"""
-    
+    """Handle delivery receipt callbacks from TransmitSMS (SMS and MMS)."""
     try:
         if request.method == "GET":
-            # Data comes via query params
             data = request.GET.dict()
             print("TransmitSMS DLR (GET):", data)
-        
         elif request.method == "POST":
-            # Handle JSON or form data in POST
             try:
                 data = json.loads(request.body)
                 print("TransmitSMS DLR (POST JSON):", data)
@@ -161,71 +220,54 @@ def transmit_dlr_callback(request):
             return JsonResponse({"error": "Method not allowed"}, status=405)
 
         # Log webhook
-        WebhookLog.objects.create(
-            webhook_type='transmit_dlr',
-            raw_data=data
-        )
-        
-        # Extract message ID and status
-        message_id = data.get('message_id')
-        status = data.get('status', '').lower()
+        WebhookLog.objects.create(webhook_type='transmit_dlr', raw_data=data)
 
-        try:
-            sms_message = SMSMessage.objects.get(transmit_message_id=message_id)
-            sms_message.delivery_status = json.dumps(data)
-
-            # Map TransmitSMS status to our status
-            if status in ['delivered', 'success']:
-                sms_message.status = 'delivered'
+        sms_message, mapped_status = _process_dlr_payload(data)
+        if sms_message and mapped_status:
+            if mapped_status == "delivered":
+                sms_message.status = "delivered"
                 sms_message.delivered_at = timezone.now()
-
-            elif status in ["failed", "error", "hard-bounce", "soft-bounce"]:
+            elif mapped_status == "failed":
                 sms_message.status = "failed"
-                sms_message.error_message = data.get("error_description", "Delivery failed")
+                sms_message.error_message = (
+                    (data.get("status") or {}).get("description") if isinstance(data.get("status"), dict)
+                    else data.get("error_description", "Delivery failed")
+                )
 
-                # 🔁 Refund wallet for failed messages
                 wallet = getattr(sms_message.ghl_account, "wallet", None)
-                if wallet:
+                if wallet and sms_message.cost:
                     try:
                         wallet.refund(
-                            amount=wallet.outbound_segment_charge,
+                            amount=sms_message.cost,
                             reference_id=str(sms_message.id),
-                            description=f"Refund for failed message {sms_message.id}"
+                            description=f"Refund for failed message {sms_message.id}",
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
-
-            elif status == "expired":
+            elif mapped_status == "expired":
                 sms_message.status = "expired"
-
-                # 🔁 Refund wallet for expired messages
                 wallet = getattr(sms_message.ghl_account, "wallet", None)
-                if wallet:
+                if wallet and sms_message.cost:
                     try:
                         wallet.refund(
-                            amount=wallet.outbound_segment_charge,
+                            amount=sms_message.cost,
                             reference_id=str(sms_message.id),
-                            description=f"Refund for expired message {sms_message.id}"
+                            description=f"Refund for expired message {sms_message.id}",
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
 
             sms_message.save()
 
-            
             update_ghl_message_status_task.delay(
-                    message_id=sms_message.ghl_message_id,
-                    status=sms_message.status,
-                    ghl_token=sms_message.ghl_account.access_token,
-                    sms_message_id=sms_message.id
-                )
-            
-            
-        except SMSMessage.DoesNotExist:
-            print(f"SMS message not found for TransmitSMS ID: {message_id}")
+                message_id=sms_message.ghl_message_id,
+                status=sms_message.status,
+                ghl_token=sms_message.ghl_account.access_token,
+                sms_message_id=str(sms_message.id),
+            )
 
         return JsonResponse({"message": "DLR processed"}, status=200)
-    
+
     except Exception as e:
         print(f"DLR callback error: {e}")
         return JsonResponse({"error": str(e)}, status=500)
