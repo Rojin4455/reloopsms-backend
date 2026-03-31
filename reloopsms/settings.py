@@ -14,7 +14,6 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -167,26 +166,35 @@ CELERY_TIMEZONE = 'UTC'
 
 from datetime import timedelta
 
+from celery.schedules import crontab
+
 CELERY_BEAT_SCHEDULE = {
+
+    # 🔑 Critical - keep crontab
     'make-api-call-every-10-hours': {
         'task': 'core.tasks.make_api_call',
-        'schedule': timedelta(hours=10),
+        'schedule': crontab(minute=0, hour='*/10'),
     },
+
     'make-api-call-for-agency-every-10-hours': {
         'task': 'core.tasks.make_api_call_for_agency_token',
-        'schedule': timedelta(hours=10),
+        'schedule': crontab(minute=5, hour='*/10'),  # slight offset
     },
+
+    # 🔁 Better to convert these too
     'sync_all_wallets_with_ghl': {
         'task': 'core.tasks.sync_all_wallets_with_ghl',
-        'schedule': timedelta(minutes=20),
+        'schedule': crontab(minute=0, hour='*/11'),
     },
+
     'make-api-call-for-sync_numbers': {
         'task': 'sms_management_app.tasks.charge_due_transmit_numbers',
-        'schedule': timedelta(days=1),
+        'schedule': crontab(minute=0, hour=0),  # once daily at midnight
     },
+
     'sync-client-owned-numbers': {
         'task': 'sms_management_app.tasks.sync_client_owned_numbers',
-        'schedule': timedelta(hours=1),
+        'schedule': crontab(minute=30, hour='*/10'),
     },
 }
 
