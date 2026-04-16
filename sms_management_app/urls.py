@@ -47,5 +47,10 @@ urlpatterns = [
 
     # Manual send queued messages
     path("messages/send-queued/", SendQueuedMessagesAPIView.as_view(), name="send_queued_messages"),
+    path(
+        "messages/<uuid:message_id>/retry/",
+        RetrySMSMessageAPIView.as_view(),
+        name="sms_message_retry",
+    ),
 
 ]

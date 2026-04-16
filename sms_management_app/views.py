@@ -246,6 +246,7 @@ def transmit_dlr_callback(request):
                             amount=sms_message.cost,
                             reference_id=str(sms_message.id),
                             description=f"Refund for failed message {sms_message.id}",
+                            segments=sms_message.segments,
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
@@ -258,6 +259,7 @@ def transmit_dlr_callback(request):
                             amount=sms_message.cost,
                             reference_id=str(sms_message.id),
                             description=f"Refund for expired message {sms_message.id}",
+                            segments=sms_message.segments,
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
@@ -1317,7 +1319,11 @@ class RegisterNumber(APIView):
             if not purchase_response.get("success", False):
                 # Refund if wallet was used
                 if use_wallet:
-                    wallet.refund(price, description=f"Refund for failed purchase of {number}")
+                    wallet.refund(
+                        price,
+                        description=f"Refund for failed purchase of {number}",
+                        adjust_wallet_segments=False,
+                    )
                 return Response(
                     {"error": f"Failed to purchase number from Transmit: {purchase_response.get('error')}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -1568,7 +1574,11 @@ class RegisterPremiumNumber(APIView):
             if not purchase_response.get("success", False):
                 # Refund if wallet used
                 if use_wallet:
-                    wallet.refund(price, description=f"Refund for failed purchase of {number}")
+                    wallet.refund(
+                        price,
+                        description=f"Refund for failed purchase of {number}",
+                        adjust_wallet_segments=False,
+                    )
                 return Response(
                     {"error": f"Failed to purchase number from Transmit: {purchase_response.get('error')}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -1763,9 +1773,10 @@ class SendQueuedMessagesAPIView(APIView):
                             else:
                                 # Refund if failed
                                 wallet.refund(
-                                    cost, 
-                                    reference_id=sms.id, 
-                                    description="Refund for failed queued SMS"
+                                    cost,
+                                    reference_id=sms.id,
+                                    description="Refund for failed queued SMS",
+                                    segments=sms.segments,
                                 )
                                 sms.status = "failed"
                                 sms.error_message = result.get("error", "Unknown error")
@@ -1835,6 +1846,215 @@ class SendQueuedMessagesAPIView(APIView):
                 {"error": f"Error processing messages: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class RetrySMSMessageAPIView(APIView):
+    """
+    POST /api/sms/messages/<message_id>/retry/
+
+    Retry a single message in **pending** or **failed** status.
+
+    - **Outbound** (GHL → TransmitSMS): sends again via TransmitSMS. Failed rows were
+      refunded when they first failed, so a retry charges the wallet again before sending.
+      Pending rows that already have a non-zero ``cost`` are assumed still debited and
+      are not charged twice.
+    - **Inbound** (TransmitSMS → GHL, failed delivery only): sets status back to
+      ``queued`` and enqueues ``process_sms_message``.
+
+    Optional JSON body or query param: ``location_id`` to ensure the message belongs
+    to that GHL location.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, message_id):
+        from sms_management_app.services import GHLIntegrationService
+        from sms_management_app.tasks import process_sms_message as process_inbound_sms_task
+
+        sms = get_object_or_404(SMSMessage, pk=message_id)
+
+        location_id = request.data.get("location_id") or request.query_params.get("location_id")
+        if location_id and str(sms.ghl_account.location_id) != str(location_id):
+            return Response(
+                {"error": "Message does not belong to the given location_id"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if sms.status not in ("pending", "failed"):
+            return Response(
+                {
+                    "error": (
+                        f"Cannot retry message in status '{sms.status}'. "
+                        "Only pending or failed are allowed."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if sms.direction == "inbound":
+            if sms.status != "failed":
+                return Response(
+                    {
+                        "error": (
+                            "Only failed inbound messages can be retried. "
+                            "Use send-queued for inbound messages still in queued status."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            sms.status = "queued"
+            sms.error_message = None
+            sms.save(update_fields=["status", "error_message"])
+            process_inbound_sms_task.delay(str(sms.id))
+            return Response(
+                {
+                    "success": True,
+                    "message_id": str(sms.id),
+                    "direction": "inbound",
+                    "status": "queued",
+                    "detail": "Inbound message re-queued for delivery to GHL",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        if sms.direction != "outbound":
+            return Response(
+                {"error": "Unsupported message direction for retry."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not sms.ghl_message_id:
+            return Response(
+                {"error": "Missing ghl_message_id (required for reply callback routing)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            wallet = Wallet.objects.get(account=sms.ghl_account)
+        except Wallet.DoesNotExist:
+            return Response(
+                {"error": "Wallet not found for this account"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        service = GHLIntegrationService()
+
+        def _fail_outbound(msg: str, *, http_status=status.HTTP_502_BAD_GATEWAY):
+            return Response(
+                {
+                    "success": False,
+                    "message_id": str(sms.id),
+                    "status": sms.status,
+                    "error": msg,
+                },
+                status=http_status,
+            )
+
+        if sms.status == "failed":
+            try:
+                cost, segments = wallet.charge_message(
+                    "outbound",
+                    sms.message_content,
+                    reference_id=sms.id,
+                )
+            except ValidationError as e:
+                return Response(
+                    {
+                        "success": False,
+                        "message_id": str(sms.id),
+                        "error": f"Insufficient balance: {str(e)}",
+                    },
+                    status=status.HTTP_402_PAYMENT_REQUIRED,
+                )
+            sms.cost = cost
+            sms.segments = segments
+            sms.error_message = None
+            sms.transmit_message_id = None
+            sms.save(
+                update_fields=["cost", "segments", "error_message", "transmit_message_id"]
+            )
+
+            result = service.send_outbound_sms(sms, cost, segments)
+            if result.get("success"):
+                sms.status = "sent"
+                sms.sent_at = timezone.now()
+                tid = result.get("transmit_message_id")
+                if tid:
+                    sms.transmit_message_id = str(tid)
+                sms.save()
+                return Response(
+                    {
+                        "success": True,
+                        "message_id": str(sms.id),
+                        "status": sms.status,
+                        "transmit_message_id": sms.transmit_message_id,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            wallet.refund(
+                cost,
+                reference_id=sms.id,
+                description="Refund: outbound retry failed to send",
+                segments=segments,
+            )
+            sms.status = "failed"
+            sms.error_message = result.get("error", "Unknown error")
+            sms.save()
+            return _fail_outbound(sms.error_message or "Send failed")
+
+        # pending
+        if sms.cost:
+            cost, segments = sms.cost, sms.segments
+        else:
+            try:
+                cost, segments = wallet.charge_message(
+                    "outbound",
+                    sms.message_content,
+                    reference_id=sms.id,
+                )
+            except ValidationError as e:
+                return Response(
+                    {
+                        "success": False,
+                        "message_id": str(sms.id),
+                        "error": f"Insufficient balance: {str(e)}",
+                    },
+                    status=status.HTTP_402_PAYMENT_REQUIRED,
+                )
+            sms.cost = cost
+            sms.segments = segments
+            sms.save(update_fields=["cost", "segments"])
+
+        sms.error_message = None
+        sms.save(update_fields=["error_message"])
+
+        result = service.send_outbound_sms(sms, cost, segments)
+        if result.get("success"):
+            sms.status = "sent"
+            sms.sent_at = timezone.now()
+            tid = result.get("transmit_message_id")
+            if tid:
+                sms.transmit_message_id = str(tid)
+            sms.save()
+            return Response(
+                {
+                    "success": True,
+                    "message_id": str(sms.id),
+                    "status": sms.status,
+                    "transmit_message_id": sms.transmit_message_id,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        wallet.refund(
+            cost,
+            reference_id=sms.id,
+            description="Refund: outbound retry failed to send",
+            segments=segments,
+        )
+        sms.status = "failed"
+        sms.error_message = result.get("error", "Unknown error")
+        sms.save()
+        return _fail_outbound(sms.error_message or "Send failed")
 
 
 def test_own_number(number, price, ghl_account):

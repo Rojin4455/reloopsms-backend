@@ -266,7 +266,8 @@ def process_sms_message(self, sms_id: str):
             wallet.refund(
                 sms.cost,
                 reference_id=sms.id,
-                description="Refund for failed inbound SMS"
+                description="Refund for failed inbound SMS",
+                adjust_wallet_segments=False,
             )
             sms.status = "failed"
             sms.error_message = data.get("error") or str(data)
@@ -413,7 +414,12 @@ def process_mms_inbound_message(self, payload: dict):
             sms.save()
             return f"MMS {sms.id} delivered to GHL"
         else:
-            wallet.refund(sms.cost, reference_id=str(sms.id), description="Refund: MMS inbound failed to push to GHL")
+            wallet.refund(
+                sms.cost,
+                reference_id=str(sms.id),
+                description="Refund: MMS inbound failed to push to GHL",
+                adjust_wallet_segments=False,
+            )
             sms.status = "failed"
             sms.error_message = resp_data.get("error") or str(resp_data) or resp.text
             sms.save()

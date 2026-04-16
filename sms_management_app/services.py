@@ -617,6 +617,7 @@ class GHLIntegrationService:
 
     def process_ghl_message(self, webhook_data):
         """Process incoming message from GHL and send via TransmitSMS (SMS or MMS)."""
+        sms_message = None
         try:
             print("🔹 Received webhook_data:", webhook_data)
 
@@ -745,22 +746,56 @@ class GHLIntegrationService:
                     'transmit_message_id': result.get('message_id'),
                 }
             else:
-                wallet.refund(cost, reference_id=sms_message.id, description='Refund: message failed to send.')
-                sms_message.status = 'failed'
-                sms_message.error_message = result.get('error', 'Unknown error')
+                err = result.get("error", "Unknown error")
+                resp_txt = result.get("response_text")
+                if resp_txt and resp_txt not in (err, str(err)):
+                    err_detail = f"{err} | {resp_txt}"
+                else:
+                    err_detail = err
+
+                wallet.refund(
+                    cost,
+                    reference_id=sms_message.id,
+                    description="Refund: message failed to send.",
+                    segments=sms_message.segments,
+                )
+                sms_message.status = "failed"
+                sms_message.error_message = err_detail[:2000] if isinstance(err_detail, str) else str(err_detail)[:2000]
                 sms_message.save()
-                print("❌ Send failed:", result.get('error'))
+                print("❌ Send failed:", err)
 
                 return {
-                    'success': False,
-                    'error': result.get('error', 'Unknown error'),
+                    "success": False,
+                    "error": err,
+                    "message_id": sms_message.id,
                 }
 
         except Exception as e:
             print("🔥 Exception occurred:", str(e))
+            if sms_message is not None:
+                try:
+                    sms_message.refresh_from_db()
+                    if sms_message.status == "pending":
+                        wallet = Wallet.objects.filter(account=sms_message.ghl_account).first()
+                        if wallet and sms_message.cost:
+                            try:
+                                wallet.refund(
+                                    sms_message.cost,
+                                    reference_id=sms_message.id,
+                                    description="Refund: error during outbound send",
+                                    segments=sms_message.segments,
+                                )
+                            except Exception as refund_err:
+                                print("⚠️ Refund after send error:", refund_err)
+                        sms_message.status = "failed"
+                        sms_message.error_message = str(e)[:2000]
+                        sms_message.save(update_fields=["status", "error_message"])
+                except Exception as cleanup_err:
+                    print("⚠️ Pending message cleanup:", cleanup_err)
             return {
-                'success': False,
-                'error': str(e),
+                "success": False,
+                "error": str(e),
+                **({"message_id": sms_message.id} if sms_message is not None else {}),
             }
 
     def send_outbound_sms(self, sms_message, cost, segments):

@@ -1,28 +1,48 @@
+import logging
+
 import requests
 from celery import shared_task
 from core.models import GHLAuthCredentials, AgencyToken
 from decouple import config
 
-@shared_task
+logger = logging.getLogger(__name__)
+
+TOKEN_REFRESH_URL = "https://services.leadconnectorhq.com/oauth/token"
+
+
+@shared_task(soft_time_limit=600, time_limit=660)
 def make_api_call():
-    tokens = GHLAuthCredentials.objects.all()
+    """Refresh OAuth tokens for all GHL location credentials (one row at a time, errors isolated)."""
+    for credentials in GHLAuthCredentials.objects.all():
+        try:
+            print("credentials tokenL", credentials)
+            refresh_token = credentials.refresh_token
+            if not refresh_token:
+                logger.warning("Skipping GHLAuthCredentials %s: empty refresh_token", credentials.pk)
+                continue
 
-    for credentials in tokens:
-    
-        print("credentials tokenL", credentials)
-        refresh_token = credentials.refresh_token
+            response = requests.post(
+                TOKEN_REFRESH_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": config("GHL_CLIENT_ID"),
+                    "client_secret": config("GHL_CLIENT_SECRET"),
+                    "refresh_token": refresh_token,
+                },
+                timeout=60,
+            )
+            new_tokens = response.json()
+            if not response.ok or not new_tokens.get("locationId"):
+                logger.error(
+                    "GHL location token refresh failed for %s: status=%s body=%s",
+                    credentials.pk,
+                    response.status_code,
+                    new_tokens,
+                )
+                continue
 
-        
-        response = requests.post('https://services.leadconnectorhq.com/oauth/token', data={
-            'grant_type': 'refresh_token',
-            'client_id': config("GHL_CLIENT_ID"),
-            'client_secret': config("GHL_CLIENT_SECRET"),
-            'refresh_token': refresh_token
-        })
-        
-        new_tokens = response.json()
-        obj, created = GHLAuthCredentials.objects.update_or_create(
-                location_id= new_tokens.get("locationId"),
+            obj, created = GHLAuthCredentials.objects.update_or_create(
+                location_id=new_tokens.get("locationId"),
                 defaults={
                     "access_token": new_tokens.get("access_token"),
                     "refresh_token": new_tokens.get("refresh_token"),
@@ -30,46 +50,62 @@ def make_api_call():
                     "scope": new_tokens.get("scope"),
                     "user_type": new_tokens.get("userType"),
                     "company_id": new_tokens.get("companyId"),
-                    "user_id":new_tokens.get("userId"),
-
-                }
+                    "user_id": new_tokens.get("userId"),
+                },
             )
-        print("refreshed: ", obj)
+            print("refreshed: ", obj)
+        except Exception:
+            logger.exception("Unexpected error refreshing location token for %s", credentials.pk)
 
 
-@shared_task
+@shared_task(soft_time_limit=600, time_limit=660)
 def make_api_call_for_agency_token():
-    tokens = AgencyToken.objects.all()
+    """Refresh OAuth tokens for all agency rows (errors isolated per row)."""
+    for credentials in AgencyToken.objects.all():
+        try:
+            print("credentials tokenL", credentials)
+            refresh_token = credentials.refresh_token
+            if not refresh_token:
+                logger.warning("Skipping AgencyToken %s: empty refresh_token", credentials.pk)
+                continue
 
-    for credentials in tokens:
-    
-        print("credentials tokenL", credentials)
-        refresh_token = credentials.refresh_token
+            response = requests.post(
+                TOKEN_REFRESH_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": config("AGENCY_CLIENT_ID"),
+                    "client_secret": config("AGENCY_CLIENT_SECRET"),
+                    "refresh_token": refresh_token,
+                },
+                timeout=60,
+            )
+            response_data = response.json()
+            if not response.ok or not response_data.get("companyId"):
+                logger.error(
+                    "Agency token refresh failed for %s: status=%s body=%s",
+                    credentials.pk,
+                    response.status_code,
+                    response_data,
+                )
+                continue
 
-        
-        response = requests.post('https://services.leadconnectorhq.com/oauth/token', data={
-            'grant_type': 'refresh_token',
-            'client_id': config("AGENCY_CLIENT_ID"),
-            'client_secret': config("AGENCY_CLIENT_SECRET"),
-            'refresh_token': refresh_token
-        })
-        
-        response_data = response.json()
-        obj, created = AgencyToken.objects.update_or_create(
-            company_id=response_data.get("companyId"),
-            defaults={
-                "access_token": response_data.get("access_token"),
-                "refresh_token": response_data.get("refresh_token"),
-                "expires_in": response_data.get("expires_in"),
-                "scope": response_data.get("scope"),
-                "user_type": response_data.get("userType"),
-                "user_id": response_data.get("userId"),
-                "is_bulk_installation": response_data.get("isBulkInstallation", False),
-                "token_type": response_data.get("token_type", "Bearer"),
-                "refresh_token_id": response_data.get("refreshTokenId"),
-            }
-        )
-        print("agency token refreshed: ", obj)
+            obj, created = AgencyToken.objects.update_or_create(
+                company_id=response_data.get("companyId"),
+                defaults={
+                    "access_token": response_data.get("access_token"),
+                    "refresh_token": response_data.get("refresh_token"),
+                    "expires_in": response_data.get("expires_in"),
+                    "scope": response_data.get("scope"),
+                    "user_type": response_data.get("userType"),
+                    "user_id": response_data.get("userId"),
+                    "is_bulk_installation": response_data.get("isBulkInstallation", False),
+                    "token_type": response_data.get("token_type", "Bearer"),
+                    "refresh_token_id": response_data.get("refreshTokenId"),
+                },
+            )
+            print("agency token refreshed: ", obj)
+        except Exception:
+            logger.exception("Unexpected error refreshing agency token for %s", credentials.pk)
         
 from django.db import transaction
 from decimal import Decimal

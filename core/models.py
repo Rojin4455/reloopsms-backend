@@ -167,8 +167,24 @@ class Wallet(models.Model):
 
         return cost, segments
     
-    def refund(self, amount, *, reference_id=None, description="Refund"):
-        """Refund credits back to wallet"""
+    def refund(
+        self,
+        amount,
+        *,
+        reference_id=None,
+        description="Refund",
+        segments=None,
+        adjust_wallet_segments=True,
+    ):
+        """Refund credits back to the wallet.
+
+        For outbound SMS/MMS sends, pass ``segments`` (same count as ``charge_message`` used)
+        when the per-segment rate can be zero; otherwise ``amount / outbound_segment_charge``
+        can raise ``decimal.DivisionUndefined`` or restore the wrong segment counts.
+
+        Use ``adjust_wallet_segments=False`` for refunds that are not outbound per-segment
+        debits (for example failed number purchase or inbound-only balance adjustments).
+        """
 
         amount = Decimal(str(amount))
         with transaction.atomic():
@@ -177,12 +193,21 @@ class Wallet(models.Model):
             wallet.balance += amount
             wallet.cred_remaining += amount
 
-            # derive segments from refunded amount
-            segments = int(amount / wallet.outbound_segment_charge)
-            wallet.seg_remaining += segments
-            wallet.seg_used -= segments
+            update_fields = ["balance", "cred_remaining"]
 
-            wallet.save(update_fields=["balance", "cred_remaining", "seg_remaining","seg_used"])
+            if adjust_wallet_segments:
+                if segments is not None:
+                    seg_delta = int(segments)
+                elif wallet.outbound_segment_charge and wallet.outbound_segment_charge > 0:
+                    seg_delta = int(amount / wallet.outbound_segment_charge)
+                else:
+                    seg_delta = 0
+
+                wallet.seg_remaining += seg_delta
+                wallet.seg_used -= seg_delta
+                update_fields.extend(["seg_remaining", "seg_used"])
+
+            wallet.save(update_fields=update_fields)
 
             WalletTransaction.objects.create(
                 wallet=wallet,

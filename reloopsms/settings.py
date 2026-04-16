@@ -155,46 +155,51 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
-CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://localhost:6379/0")
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 
-
-
-from datetime import timedelta
+# Dedicated queue for OAuth refresh so heavy tasks cannot delay token rotation.
+CELERY_TASK_DEFAULT_QUEUE = "celery"
+CELERY_TASK_ROUTES = {
+    "core.tasks.make_api_call": {"queue": "critical"},
+    "core.tasks.make_api_call_for_agency_token": {"queue": "critical"},
+}
+# Lower prefetch helps long-running tasks release the next message sooner (tune per deployment).
+CELERY_WORKER_PREFETCH_MULTIPLIER = config("CELERY_WORKER_PREFETCH_MULTIPLIER", default=2, cast=int)
 
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
 
-    # 🔑 Critical - keep crontab
-    'make-api-call-every-10-hours': {
-        'task': 'core.tasks.make_api_call',
-        'schedule': crontab(minute=0, hour='*/10'),
+    # OAuth: every 6h on the critical queue (staggered). Run workers with -Q critical,celery.
+    "make-api-call-every-6-hours": {
+        "task": "core.tasks.make_api_call",
+        "schedule": crontab(minute=0, hour="*/10"),
+        "options": {"queue": "critical"},
+    },
+    "make-api-call-for-agency-every-6-hours": {
+        "task": "core.tasks.make_api_call_for_agency_token",
+        "schedule": crontab(minute=15, hour="*/10"),
+        "options": {"queue": "critical"},
     },
 
-    'make-api-call-for-agency-every-10-hours': {
-        'task': 'core.tasks.make_api_call_for_agency_token',
-        'schedule': crontab(minute=5, hour='*/10'),  # slight offset
+    "sync_all_wallets_with_ghl": {
+        "task": "core.tasks.sync_all_wallets_with_ghl",
+        "schedule": crontab(minute=0, hour=0),
     },
 
-    # 🔁 Better to convert these too
-    'sync_all_wallets_with_ghl': {
-        'task': 'core.tasks.sync_all_wallets_with_ghl',
-        'schedule': crontab(minute=0, hour='*/11'),
+    "make-api-call-for-sync_numbers": {
+        "task": "sms_management_app.tasks.charge_due_transmit_numbers",
+        "schedule": crontab(minute=0, hour=0),
     },
 
-    'make-api-call-for-sync_numbers': {
-        'task': 'sms_management_app.tasks.charge_due_transmit_numbers',
-        'schedule': crontab(minute=0, hour=0),  # once daily at midnight
-    },
-
-    'sync-client-owned-numbers': {
-        'task': 'sms_management_app.tasks.sync_client_owned_numbers',
-        'schedule': crontab(minute=30, hour='*/10'),
+    "sync-client-owned-numbers": {
+        "task": "sms_management_app.tasks.sync_client_owned_numbers",
+        "schedule": crontab(minute=30, hour="*/10"),
     },
 }
 
