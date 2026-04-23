@@ -187,10 +187,10 @@ CELERY_BEAT_SCHEDULE = {
         "options": {"queue": "critical"},
     },
 
-    "sync_all_wallets_with_ghl": {
-        "task": "core.tasks.sync_all_wallets_with_ghl",
-        "schedule": crontab(minute=0, hour=0),
-    },
+    # "sync_all_wallets_with_ghl": {
+    #     "task": "core.tasks.sync_all_wallets_with_ghl",
+    #     "schedule": crontab(minute=0, hour=0),
+    # },
 
     "make-api-call-for-sync_numbers": {
         "task": "sms_management_app.tasks.charge_due_transmit_numbers",
@@ -199,7 +199,7 @@ CELERY_BEAT_SCHEDULE = {
 
     "sync-client-owned-numbers": {
         "task": "sms_management_app.tasks.sync_client_owned_numbers",
-        "schedule": crontab(minute=30, hour="*/10"),
+        "schedule": crontab(minute=30, hour=0),
     },
 }
 

@@ -64,7 +64,7 @@ class GHLRateLimiter:
             cache.set(day_key, 1, timeout=86400)
 
 
-@shared_task(bind=True, max_retries=5, default_retry_delay=60)
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_message_id=None):
     """
     Celery task to update GHL message status with rate limiting
@@ -182,7 +182,7 @@ def batch_update_ghl_statuses(self, updates_batch):
 
 
 # Priority queue for urgent updates
-@shared_task(bind=True, max_retries=5, default_retry_delay=30)
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
 def urgent_update_ghl_message_status(self, message_id, status, ghl_token, sms_message_id=None):
     """
     High-priority task for urgent GHL updates (e.g., delivery confirmations)
