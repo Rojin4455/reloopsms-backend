@@ -186,6 +186,10 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute=15, hour="*/10"),
         "options": {"queue": "critical"},
     },
+    "sync-contact-wallet-custom-fields-every-10-hours": {
+        "task": "core.tasks.sync_contact_wallet_custom_fields",
+        "schedule": crontab(minute=25, hour="*/10"),
+    },
 
     # "sync_all_wallets_with_ghl": {
     #     "task": "core.tasks.sync_all_wallets_with_ghl",
@@ -268,3 +272,6 @@ BASE_URL = config('BASE_URI', 'http://localhost:8000')
 
 STRIPE_TEST_API_KEY = config("STRIPE_TEST_API_KEY")
 STRIPE_LIVE_API_KEY = config("STRIPE_LIVE_API_KEY")
+
+GHL_CF_CREDITS_REMAINING_NEW_ID = config("GHL_CF_CREDITS_REMAINING_NEW_ID", default="")
+GHL_CF_SMS_RECHARGE_LOCATION_ID = config("GHL_CF_SMS_RECHARGE_LOCATION_ID", default="")

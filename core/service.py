@@ -170,7 +170,7 @@ class GHLService:
         payload = {
             "customFields": [
                 {
-                    "id": "wBmyg1m2ThS28KTpCzDz",
+                    "id": custom_field_id,
                     "field_value": str(field_value)
                 }
             ]

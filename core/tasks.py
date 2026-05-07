@@ -198,3 +198,66 @@ def sync_all_wallets_with_ghl():
         except Exception:
             # log exception and continue with next wallet
             continue
+
+
+@shared_task(soft_time_limit=600, time_limit=660)
+def sync_contact_wallet_custom_fields():
+    """
+    Sync wallet/contact data into GoHighLevel contact custom fields.
+
+    Requires:
+    - GHL_CF_CREDITS_REMAINING_NEW_ID in environment/settings
+    - GHL_CF_SMS_RECHARGE_LOCATION_ID in environment/settings
+    - GHLAuthCredentials.ghl_contact_id per account
+    """
+    credits_field_id = getattr(settings, "GHL_CF_CREDITS_REMAINING_NEW_ID", None)
+    location_field_id = getattr(settings, "GHL_CF_SMS_RECHARGE_LOCATION_ID", None)
+
+    if not credits_field_id or not location_field_id:
+        logger.error(
+            "Missing contact field IDs for sync task. "
+            "Set GHL_CF_CREDITS_REMAINING_NEW_ID and GHL_CF_SMS_RECHARGE_LOCATION_ID."
+        )
+        return
+
+    accounts = GHLAuthCredentials.objects.select_related("wallet").all()
+    for account in accounts:
+        try:
+            wallet = getattr(account, "wallet", None)
+            if not wallet:
+                logger.info("Skipping location %s: no wallet", account.location_id)
+                continue
+
+            if not account.ghl_contact_id:
+                logger.info("Skipping location %s: missing ghl_contact_id", account.location_id)
+                continue
+
+            if not account.access_token:
+                logger.warning("Skipping location %s: missing access token", account.location_id)
+                continue
+
+            if not account.location_id:
+                logger.warning("Skipping account %s: missing location_id", account.pk)
+                continue
+
+            service = GHLService(access_token=account.access_token)
+            service.update_contact_custom_field(
+                account.ghl_contact_id,
+                credits_field_id,
+                str(wallet.balance),
+            )
+            service.update_contact_custom_field(
+                account.ghl_contact_id,
+                location_field_id,
+                account.location_id,
+            )
+            logger.info(
+                "Synced contact custom fields for location %s contact %s",
+                account.location_id,
+                account.ghl_contact_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed syncing contact custom fields for location %s",
+                account.location_id,
+            )
