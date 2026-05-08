@@ -36,6 +36,11 @@ class GHLAuthCredentials(models.Model):
     location_name = models.CharField(max_length=255, null=True, blank=True)
     timezone = models.CharField(max_length=100, null=True, blank=True, default="")
     location_id = models.CharField(max_length=255, null=True, blank=True)
+    ghl_contact_email = models.EmailField(
+        null=True,
+        blank=True,
+        help_text="GoHighLevel contact email used to resolve contact ID automatically",
+    )
     ghl_contact_id = models.CharField(
         max_length=255,
         null=True,

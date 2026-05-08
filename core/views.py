@@ -25,6 +25,7 @@ from rest_framework.response import Response
 
 from core.models import GHLAuthCredentials
 from core.services import get_location_name
+from core.service import GHLService
 from .serializers import UserSerializer, RegisterSerializer
 from .models import GHLAuthCredentials, Wallet, WalletTransaction
 from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer, WalletListingSerializer, WalletTransactionListingSerializer
@@ -57,6 +58,66 @@ AGENCY_CLIENT_ID = config("AGENCY_CLIENT_ID")
 AGENCY_CLIENT_SECRET = config("AGENCY_CLIENT_SECRET")
 AGENCY_REDIRECT_URI = config("AGENCY_REDIRECT_URI")
 AGENCY_SCOPE = config("AGENCY_SCOPE")
+
+
+def _lookup_ghl_contact_id_by_email(access_token: str, location_id: str, email: str):
+    """
+    Resolve a GHL contact by email within a location and return contact ID.
+    Tries duplicate-search endpoint first, then generic contacts query as fallback.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Version": "2021-07-28",
+    }
+
+    # 1) Preferred duplicate lookup endpoint
+    try:
+        dup_resp = requests.post(
+            "https://services.leadconnectorhq.com/contacts/search/duplicate",
+            json={"locationId": location_id, "email": email},
+            headers=headers,
+            timeout=20,
+        )
+        if dup_resp.ok:
+            dup_data = dup_resp.json()
+            contact = dup_data.get("contact") or {}
+            contact_id = contact.get("id") or contact.get("_id")
+            if contact_id:
+                return contact_id
+    except Exception:
+        pass
+
+    # 2) Fallback query endpoint
+    try:
+        query_resp = requests.get(
+            f"https://services.leadconnectorhq.com/contacts/?locationId={quote(location_id)}&query={quote(email)}",
+            headers=headers,
+            timeout=20,
+        )
+        if query_resp.ok:
+            query_data = query_resp.json()
+            contacts = query_data.get("contacts") or []
+            for contact in contacts:
+                contact_email = (contact.get("email") or "").strip().lower()
+                if contact_email == email.strip().lower():
+                    return contact.get("id") or contact.get("_id")
+    except Exception:
+        pass
+
+    return None
+
+
+def _lookup_latest_stripe_customer_id(email: str):
+    customers = stripe.Customer.search(
+        query=f"email:'{email}'",
+        limit=10,
+    )
+    if not customers.data:
+        return None
+    latest_customer = sorted(customers.data, key=lambda c: c.created, reverse=True)[0]
+    return latest_customer.id
 
 
 def auth_connect(request):
@@ -330,6 +391,66 @@ class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = GHLAuthCredentials.objects.all()
     serializer_class = GHLAuthCredentialsSerializer
     permission_classes = [IsAdminUser]
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        save_kwargs = {}
+        sync_result = None
+
+        if "ghl_contact_email" in serializer.validated_data:
+            contact_email = (serializer.validated_data.get("ghl_contact_email") or "").strip()
+            if not contact_email:
+                save_kwargs["ghl_contact_id"] = None
+                sync_result = {"status": "cleared", "message": "ghl_contact_id cleared because email is empty"}
+            else:
+                if not instance.access_token or not instance.location_id:
+                    return Response(
+                        {"error": "Cannot resolve GHL contact: account is missing access token or location_id"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                contact_id = _lookup_ghl_contact_id_by_email(
+                    instance.access_token,
+                    instance.location_id,
+                    contact_email,
+                )
+                if not contact_id:
+                    return Response(
+                        {"error": "No GHL contact found for the provided email in this location"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                save_kwargs["ghl_contact_id"] = contact_id
+
+                stripe_customer_id = _lookup_latest_stripe_customer_id(contact_email)
+                if not stripe_customer_id:
+                    return Response(
+                        {"error": "No Stripe customer found for the provided email"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                service = GHLService(access_token=instance.access_token)
+                service.update_contact_custom_field(
+                    contact_id=contact_id,
+                    custom_field_id=settings.GHL_CF_STRIPE_ID,
+                    field_value=stripe_customer_id,
+                )
+
+                sync_result = {
+                    "status": "updated",
+                    "ghl_contact_id": contact_id,
+                    "stripe_customer_id": stripe_customer_id,
+                }
+
+        serializer.save(**save_kwargs)
+        response_data = serializer.data
+        if sync_result is not None:
+            response_data["ghl_contact_sync"] = sync_result
+        return Response(response_data, status=status.HTTP_200_OK)
 
 ORDERS_WEBHOOK_URL = "https://ttillpgzclaggdureeka.supabase.co/functions/v1/orders-webhook"
 
