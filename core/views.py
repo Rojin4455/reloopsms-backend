@@ -120,6 +120,17 @@ def _lookup_latest_stripe_customer_id(email: str):
     return latest_customer.id
 
 
+def _get_main_location_credentials():
+    main_location_id = settings.GHL_MAIN_LOCATION_ID
+    try:
+        creds = GHLAuthCredentials.objects.get(location_id=main_location_id)
+    except GHLAuthCredentials.DoesNotExist:
+        return None, f"Main GHL account not found for location_id={main_location_id}"
+    if not creds.access_token:
+        return None, f"Main GHL account is missing access token for location_id={main_location_id}"
+    return creds, None
+
+
 def auth_connect(request):
     auth_url = ("https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&"
                 f"redirect_uri={GHL_REDIRECTED_URI}&"
@@ -407,20 +418,21 @@ class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
                 save_kwargs["ghl_contact_id"] = None
                 sync_result = {"status": "cleared", "message": "ghl_contact_id cleared because email is empty"}
             else:
-                if not instance.access_token or not instance.location_id:
+                main_creds, creds_error = _get_main_location_credentials()
+                if creds_error:
                     return Response(
-                        {"error": "Cannot resolve GHL contact: account is missing access token or location_id"},
+                        {"error": creds_error},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
                 contact_id = _lookup_ghl_contact_id_by_email(
-                    instance.access_token,
-                    instance.location_id,
+                    main_creds.access_token,
+                    settings.GHL_MAIN_LOCATION_ID,
                     contact_email,
                 )
                 if not contact_id:
                     return Response(
-                        {"error": "No GHL contact found for the provided email in this location"},
+                        {"error": "No GHL contact found for the provided email in the main Reloop Pro account"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -433,7 +445,7 @@ class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                service = GHLService(access_token=instance.access_token)
+                service = GHLService(access_token=main_creds.access_token)
                 service.update_contact_custom_field(
                     contact_id=contact_id,
                     custom_field_id=settings.GHL_CF_STRIPE_ID,

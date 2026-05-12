@@ -113,7 +113,7 @@ from core.models import Wallet, WalletTransaction, GHLAuthCredentials
 from core.service import GHLService
 from django.conf import settings
 
-MAIN_LOCATION_ID = "fM52tHdamVZya3QZH3ck"
+MAIN_LOCATION_ID = settings.GHL_MAIN_LOCATION_ID
 
 @shared_task
 def sync_all_wallets_with_ghl():
@@ -220,6 +220,17 @@ def sync_contact_wallet_custom_fields():
         )
         return
 
+    try:
+        main_creds = GHLAuthCredentials.objects.get(location_id=MAIN_LOCATION_ID)
+    except GHLAuthCredentials.DoesNotExist:
+        logger.error("Main location credentials not found for location_id=%s", MAIN_LOCATION_ID)
+        return
+
+    if not main_creds.access_token:
+        logger.error("Main location access token is missing for location_id=%s", MAIN_LOCATION_ID)
+        return
+
+    service = GHLService(access_token=main_creds.access_token)
     accounts = GHLAuthCredentials.objects.select_related("wallet").all()
     for account in accounts:
         try:
@@ -232,15 +243,10 @@ def sync_contact_wallet_custom_fields():
                 logger.info("Skipping location %s: missing ghl_contact_id", account.location_id)
                 continue
 
-            if not account.access_token:
-                logger.warning("Skipping location %s: missing access token", account.location_id)
-                continue
-
             if not account.location_id:
                 logger.warning("Skipping account %s: missing location_id", account.pk)
                 continue
 
-            service = GHLService(access_token=account.access_token)
             service.update_contact_custom_field(
                 account.ghl_contact_id,
                 credits_field_id,
