@@ -114,6 +114,7 @@ def _lookup_latest_stripe_customer_id(email: str):
         query=f"email:'{email}'",
         limit=10,
     )
+    print("customers: ",customers)
     if not customers.data:
         return None
     latest_customer = sorted(customers.data, key=lambda c: c.created, reverse=True)[0]
@@ -452,10 +453,19 @@ class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):
                     field_value=stripe_customer_id,
                 )
 
+                location_field_id = getattr(settings, "GHL_CF_SMS_RECHARGE_LOCATION_ID", None)
+                if location_field_id and instance.location_id:
+                    service.update_contact_custom_field(
+                        contact_id=contact_id,
+                        custom_field_id=location_field_id,
+                        field_value=instance.location_id,
+                    )
+
                 sync_result = {
                     "status": "updated",
                     "ghl_contact_id": contact_id,
                     "stripe_customer_id": stripe_customer_id,
+                    "location_id": instance.location_id,
                 }
 
         serializer.save(**save_kwargs)
