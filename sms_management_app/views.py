@@ -413,13 +413,45 @@ class SMSMessageListView(generics.ListAPIView):
 
 from decimal import Decimal
 
+
+def _extract_wallet_adjust_params(data):
+    """
+    Normalize wallet adjust payload from multiple webhook shapes:
+    - Standard: {"action", "amount", "reference_id"} at top level
+    - GHL workflow: same fields under "customData" / "custom_data"
+    - Payment: {"payment": {"transaction_id", "total_amount"}}
+    Top-level keys take precedence; customData fills in any missing values.
+    """
+    if "payment" in data:
+        payment_data = data["payment"] or {}
+        return {
+            "action": "add",
+            "amount": Decimal(str(payment_data.get("total_amount", 0))),
+            "reference_id": payment_data.get("transaction_id"),
+        }
+
+    custom = data.get("customData") or data.get("custom_data") or {}
+    if not isinstance(custom, dict):
+        custom = {}
+
+    action = data.get("action") or custom.get("action")
+    amount_raw = data.get("amount", custom.get("amount"))
+    reference_id = data.get("reference_id") or custom.get("reference_id")
+
+    return {
+        "action": action,
+        "amount": Decimal(str(amount_raw or 0)),
+        "reference_id": reference_id,
+    }
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def wallet_adjust_funds(request, location_id):
     """
     Webhook endpoint to gift or take funds from a wallet.
     URL: /wallet/<location_id>/adjust-funds/
-    Expected JSON body:
+    Expected JSON body (top-level or under customData):
       {
         "action": "gift" | "take" | "add",
         "amount": 50.00,
@@ -429,20 +461,13 @@ def wallet_adjust_funds(request, location_id):
     try:
         data = json.loads(request.body.decode("utf-8"))
         print("Wallet adjust funds data:", data)
-        if "payment" in data:
-            payment_data = data["payment"]
-            reference_id = payment_data.get("transaction_id")
-            amount = Decimal(str(payment_data.get("total_amount", 0)))
-            action = "add"  # default or implied action for payment type
-        else:
-            # Standard payload handling
-            action = data.get("action")
-            amount = Decimal(str(data.get("amount", 0)))
-            reference_id = data.get("reference_id")
+        params = _extract_wallet_adjust_params(data)
+        action = params["action"]
+        amount = params["amount"]
+        reference_id = params["reference_id"]
 
-            # Validate action only if no payment data
-            if not action or action not in ["gift", "take", "add"]:
-                return JsonResponse({"error": "Invalid or missing action"}, status=400)
+        if not action or action not in ["gift", "take", "add"]:
+            return JsonResponse({"error": "Invalid or missing action"}, status=400)
 
         if amount <= 0:
             return JsonResponse({"error": "Invalid amount"}, status=400)
@@ -466,7 +491,7 @@ def wallet_adjust_funds(request, location_id):
             message = "Funds deducted successfully"
 
         else:  # action == "add"
-            new_balance = wallet.add_funds(amount)
+            new_balance = wallet.add_funds(amount, reference_id=reference_id)
             message = "Funds added successfully"
 
         return JsonResponse({
