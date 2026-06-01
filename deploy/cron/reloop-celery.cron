@@ -1,0 +1,11 @@
+# Reloop Celery reliability cron (install: sudo crontab -u ubuntu -e)
+# Paths match default EC2 layout; adjust if your venv/project path differs.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Hourly watchdog: re-queue any periodic task Beat missed.
+0 * * * * cd /home/ubuntu/reloop-backend/reloopsms-backend && /home/ubuntu/reloop-backend/venv/bin/python manage.py ensure_periodic_tasks >> /var/log/reloop-periodic-watchdog.log 2>&1
+
+# OAuth safety net every 6 hours (runs in-process; does not require Beat).
+0 */6 * * * cd /home/ubuntu/reloop-backend/reloopsms-backend && /home/ubuntu/reloop-backend/venv/bin/python manage.py refresh_oauth_tokens >> /var/log/reloop-oauth-backup.log 2>&1

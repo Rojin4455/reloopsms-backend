@@ -1,0 +1,14 @@
+[Unit]
+Description=Reloop Celery Beat Scheduler (django-celery-beat DatabaseScheduler)
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/reloop-backend/reloopsms-backend
+ExecStart=/home/ubuntu/reloop-backend/venv/bin/celery -A reloopsms beat -l info -S django
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
