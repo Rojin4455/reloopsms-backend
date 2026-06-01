@@ -102,6 +102,8 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
             "balance_after",
             "description",
             "reference_id",
+            "direction",
+            "segments",
             "created_at",
         ]
     
@@ -115,6 +117,8 @@ class WalletTransactionListingSerializer(serializers.ModelSerializer):
             "balance_after",
             "description",
             "reference_id",
+            "direction",
+            "segments",
             "created_at",
         ]
 

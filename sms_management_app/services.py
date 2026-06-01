@@ -758,6 +758,7 @@ class GHLIntegrationService:
                     reference_id=sms_message.id,
                     description="Refund: message failed to send.",
                     segments=sms_message.segments,
+                    direction="outbound",
                 )
                 sms_message.status = "failed"
                 sms_message.error_message = err_detail[:2000] if isinstance(err_detail, str) else str(err_detail)[:2000]
@@ -784,6 +785,7 @@ class GHLIntegrationService:
                                     reference_id=sms_message.id,
                                     description="Refund: error during outbound send",
                                     segments=sms_message.segments,
+                                    direction="outbound",
                                 )
                             except Exception as refund_err:
                                 print("⚠️ Refund after send error:", refund_err)

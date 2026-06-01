@@ -247,6 +247,7 @@ def transmit_dlr_callback(request):
                             reference_id=str(sms_message.id),
                             description=f"Refund for failed message {sms_message.id}",
                             segments=sms_message.segments,
+                            direction=sms_message.direction,
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
@@ -260,6 +261,7 @@ def transmit_dlr_callback(request):
                             reference_id=str(sms_message.id),
                             description=f"Refund for expired message {sms_message.id}",
                             segments=sms_message.segments,
+                            direction=sms_message.direction,
                         )
                     except Exception as e:
                         print(f"Refund failed for {sms_message.id}: {e}")
@@ -1802,6 +1804,7 @@ class SendQueuedMessagesAPIView(APIView):
                                     reference_id=sms.id,
                                     description="Refund for failed queued SMS",
                                     segments=sms.segments,
+                                    direction="outbound",
                                 )
                                 sms.status = "failed"
                                 sms.error_message = result.get("error", "Unknown error")
@@ -2020,6 +2023,7 @@ class RetrySMSMessageAPIView(APIView):
                 reference_id=sms.id,
                 description="Refund: outbound retry failed to send",
                 segments=segments,
+                direction="outbound",
             )
             sms.status = "failed"
             sms.error_message = result.get("error", "Unknown error")
@@ -2075,6 +2079,7 @@ class RetrySMSMessageAPIView(APIView):
             reference_id=sms.id,
             description="Refund: outbound retry failed to send",
             segments=segments,
+            direction="outbound",
         )
         sms.status = "failed"
         sms.error_message = result.get("error", "Unknown error")

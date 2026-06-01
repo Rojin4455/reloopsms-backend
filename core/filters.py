@@ -23,6 +23,11 @@ class WalletTransactionFilter(django_filters.FilterSet):
     end_date = django_filters.DateFilter(field_name="created_at", lookup_expr="lte")
     transaction_type = django_filters.CharFilter(field_name="transaction_type")  # credit / debit
     wallet = django_filters.UUIDFilter(field_name="wallet__id")  # filter by wallet id
+    direction = django_filters.CharFilter(field_name="direction")  # inbound / outbound
+    min_amount = django_filters.NumberFilter(field_name="amount", lookup_expr="gte")
+    max_amount = django_filters.NumberFilter(field_name="amount", lookup_expr="lte")
+    min_segments = django_filters.NumberFilter(field_name="segments", lookup_expr="gte")
+    max_segments = django_filters.NumberFilter(field_name="segments", lookup_expr="lte")
     ordering = django_filters.OrderingFilter(
         fields=(
             ("created_at", "created_at"),
@@ -32,4 +37,4 @@ class WalletTransactionFilter(django_filters.FilterSet):
 
     class Meta:
         model = WalletTransaction
-        fields = ["transaction_type", "wallet"]
+        fields = ["transaction_type", "wallet", "direction"]

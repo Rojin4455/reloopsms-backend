@@ -173,7 +173,9 @@ class Wallet(models.Model):
                 amount=cost,
                 balance_after=wallet.balance,
                 description=f"Charged for {direction} SMS ({segments} segments)",
-                reference_id=reference_id
+                reference_id=reference_id,
+                direction=direction,
+                segments=segments,
             )
 
         return cost, segments
@@ -185,6 +187,7 @@ class Wallet(models.Model):
         reference_id=None,
         description="Refund",
         segments=None,
+        direction=None,
         adjust_wallet_segments=True,
     ):
         """Refund credits back to the wallet.
@@ -226,7 +229,9 @@ class Wallet(models.Model):
                 amount=amount,
                 balance_after=wallet.balance,
                 description=description,
-                reference_id=reference_id
+                reference_id=reference_id,
+                direction=direction,
+                segments=segments,
             )
 
 
@@ -331,6 +336,10 @@ class WalletTransaction(models.Model):
         ("credit", "Credit"),   # add funds
         ("debit", "Debit"),     # charge for SMS
     )
+    DIRECTION_CHOICES = (
+        ("inbound", "Inbound"),
+        ("outbound", "Outbound"),
+    )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     wallet = models.ForeignKey("Wallet", on_delete=models.CASCADE, related_name="transactions")
@@ -341,6 +350,10 @@ class WalletTransaction(models.Model):
 
     description = models.TextField(null=True, blank=True)  # e.g. "Charged for outbound SMS", "Payment via Stripe"
     reference_id = models.CharField(max_length=255, null=True, blank=True)  # payment gateway txn ID or sms ID
+    direction = models.CharField(
+        max_length=10, choices=DIRECTION_CHOICES, null=True, blank=True
+    )
+    segments = models.PositiveIntegerField(null=True, blank=True)
 
     created_at = models.DateTimeField(default=now)
 

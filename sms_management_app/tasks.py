@@ -268,6 +268,7 @@ def process_sms_message(self, sms_id: str):
                 reference_id=sms.id,
                 description="Refund for failed inbound SMS",
                 adjust_wallet_segments=False,
+                direction="inbound",
             )
             sms.status = "failed"
             sms.error_message = data.get("error") or str(data)
@@ -419,6 +420,7 @@ def process_mms_inbound_message(self, payload: dict):
                 reference_id=str(sms.id),
                 description="Refund: MMS inbound failed to push to GHL",
                 adjust_wallet_segments=False,
+                direction="inbound",
             )
             sms.status = "failed"
             sms.error_message = resp_data.get("error") or str(resp_data) or resp.text
