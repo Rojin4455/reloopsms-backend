@@ -161,6 +161,9 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
+# Persist beat schedules in Postgres (survives restarts; editable in Django admin).
+# Start beat: celery -A reloopsms beat -l info -S django
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 # Dedicated queue for OAuth refresh so heavy tasks cannot delay token rotation.
 CELERY_TASK_DEFAULT_QUEUE = "celery"
@@ -173,9 +176,11 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = config("CELERY_WORKER_PREFETCH_MULTIPLIER", 
 
 from celery.schedules import crontab
 
+# Reference schedule — seeded into django_celery_beat via core migration 0020.
+# DatabaseScheduler ignores this dict once PeriodicTask rows exist.
 CELERY_BEAT_SCHEDULE = {
 
-    # OAuth: every 6h on the critical queue (staggered). Run workers with -Q critical,celery.
+    # OAuth: every 10h on the critical queue (staggered). Run workers with -Q critical,celery.
     "make-api-call-every-6-hours": {
         "task": "core.tasks.make_api_call",
         "schedule": crontab(minute=0, hour="*/10"),
