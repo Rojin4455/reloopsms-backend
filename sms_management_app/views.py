@@ -273,6 +273,7 @@ def transmit_dlr_callback(request):
                 status=sms_message.status,
                 ghl_token=sms_message.ghl_account.access_token,
                 sms_message_id=str(sms_message.id),
+                ghl_account_id=str(sms_message.ghl_account_id),
             )
 
         return JsonResponse({"message": "DLR processed"}, status=200)

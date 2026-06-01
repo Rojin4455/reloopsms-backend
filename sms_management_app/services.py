@@ -832,7 +832,7 @@ class GHLIntegrationService:
 
 
 
-def update_ghl_message_status(message_id, status, ghl_token):
+def update_ghl_message_status(message_id, status, ghl_token, auth_credentials=None):
     """
     Update message status in GHL conversations.
     
@@ -840,6 +840,7 @@ def update_ghl_message_status(message_id, status, ghl_token):
         message_id (str): GHL message ID to update
         status (str): New status value
         ghl_token (str): Bearer token for GHL API
+        auth_credentials: GHLAuthCredentials used to reload token after 401 refresh
     
     Common valid statuses (based on typical messaging APIs):
     - 'delivered'
@@ -850,6 +851,8 @@ def update_ghl_message_status(message_id, status, ghl_token):
     
     Note: 'failed' may not be a valid status for GHL API
     """
+    from core.ghl_auth import ghl_request
+
     url = f"https://services.leadconnectorhq.com/conversations/messages/{message_id}/status"
     
     headers = {
@@ -882,7 +885,13 @@ def update_ghl_message_status(message_id, status, ghl_token):
         print(f"[DEBUG] Request URL: {url}")
         print(f"[DEBUG] Request payload: {json.dumps(payload, indent=2)}")
         
-        response = requests.put(url, headers=headers, data=payload)
+        response = ghl_request(
+            "PUT",
+            url,
+            headers=headers,
+            data=payload,
+            auth_credentials=auth_credentials,
+        )
         
         # Enhanced error handling
         if response.status_code == 422:

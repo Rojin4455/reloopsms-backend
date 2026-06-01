@@ -1,12 +1,15 @@
 import requests
 from django.conf import settings
 
+from core.ghl_auth import ghl_request
+
 GHL_BASE_URL = "https://services.leadconnectorhq.com/objects/custom_objects.sms_credits"
 GHL_API_VERSION = "2021-07-28"
 
 class GHLService:
-    def __init__(self, access_token):
+    def __init__(self, access_token, auth_credentials=None):
         self.access_token = access_token
+        self.auth_credentials = auth_credentials
 
     def headers(self):
         return {
@@ -16,23 +19,39 @@ class GHLService:
             "Version": GHL_API_VERSION,
         }
 
+    def _request(self, method, url, **kwargs):
+        headers = kwargs.pop("headers", self.headers())
+        response = ghl_request(
+            method,
+            url,
+            headers=headers,
+            auth_credentials=self.auth_credentials,
+            timeout=kwargs.pop("timeout", 30),
+            **kwargs,
+        )
+        if self.auth_credentials is not None:
+            self.access_token = self.auth_credentials.access_token
+        return response
+
     def search_records(self, main_location_id, page=1, page_limit=50):
         payload = {"locationId": main_location_id, "page": page, "pageLimit": page_limit}
-        r = requests.post(f"{GHL_BASE_URL}/records/search", json=payload, headers=self.headers(), timeout=30)
+        r = self._request("POST", f"{GHL_BASE_URL}/records/search", json=payload)
         r.raise_for_status()
         return r.json()
 
     def create_record(self, main_location_id, properties):
         payload = {"locationId": main_location_id, "properties": properties}
-        r = requests.post(f"{GHL_BASE_URL}/records", json=payload, headers=self.headers(), timeout=30)
+        r = self._request("POST", f"{GHL_BASE_URL}/records", json=payload)
         r.raise_for_status()
         return r.json()
 
     def get_record(self, record_id, main_location_id):
         # If GHL provides a GET endpoint, prefer it. If not, fallback to search and filter by id.
-        r = requests.post(f"{GHL_BASE_URL}/records/search",
-                          json={"locationId": main_location_id, "page": 1, "pageLimit": 1, "searchAfter": None},
-                          headers=self.headers(), timeout=30)
+        r = self._request(
+            "POST",
+            f"{GHL_BASE_URL}/records/search",
+            json={"locationId": main_location_id, "page": 1, "pageLimit": 1, "searchAfter": None},
+        )
         r.raise_for_status()
         # fallback simple scan — you may adapt if API has GET /records/{id}
         data = r.json()
@@ -57,7 +76,7 @@ class GHLService:
         print(f"📋 [get_record_by_id] URL: {url}")
         print(f"📋 [get_record_by_id] Record ID: {record_id}")
         try:
-            r = requests.get(url, headers=self.headers(), timeout=30)
+            r = self._request("GET", url)
             print(f"📋 [get_record_by_id] Response Status: {r.status_code}")
             r.raise_for_status()
             response_data = r.json()
@@ -91,7 +110,7 @@ class GHLService:
         # print(f"➡️ Headers: {json.dumps(self.headers(), indent=2)}")
         print(f"➡️ Payload: {json.dumps(payload, indent=2)}")
 
-        r = requests.put(url, json=payload, headers=self.headers(), timeout=30)
+        r = self._request("PUT", url, json=payload)
 
         print(f"⬅️ Response Status: {r.status_code}")
         try:
@@ -135,7 +154,7 @@ class GHLService:
         print(f"🔍 [get_contact] URL: {url}")
         print(f"🔍 [get_contact] Contact ID: {contact_id}")
         try:
-            r = requests.get(url, headers=self.headers(), timeout=30)
+            r = self._request("GET", url)
             print(f"🔍 [get_contact] Response Status: {r.status_code}")
             r.raise_for_status()
             contact_data = r.json()
@@ -180,7 +199,7 @@ class GHLService:
         print(f"✏️ [update_contact_custom_field] Headers: {json.dumps({k: v for k, v in self.headers().items() if k != 'Authorization'}, indent=2)}")
         
         try:
-            r = requests.put(url, json=payload, headers=self.headers(), timeout=30)
+            r = self._request("PUT", url, json=payload)
             print(f"✏️ [update_contact_custom_field] Response Status: {r.status_code}")
             print(f"✏️ [update_contact_custom_field] Response: {r.text}")
             r.raise_for_status()

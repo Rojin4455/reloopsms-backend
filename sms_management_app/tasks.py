@@ -65,7 +65,7 @@ class GHLRateLimiter:
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_message_id=None):
+def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_message_id=None, ghl_account_id=None):
     """
     Celery task to update GHL message status with rate limiting
     """
@@ -84,7 +84,7 @@ def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_mess
                 raise self.retry(countdown=3600, exc=Exception(reason))
         
         # Make the API call
-        success = _make_ghl_api_call(message_id, status, ghl_token)
+        success = _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=ghl_account_id)
         
         if success:
             # Increment counters only on successful request
@@ -111,14 +111,24 @@ def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_mess
         raise self.retry(exc=exc)
 
 
-def _make_ghl_api_call(message_id, status, ghl_token):
+def _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=None):
     """
     Make the actual API call to GHL using existing function
     """
+    from core.models import GHLAuthCredentials
     from sms_management_app.services import update_ghl_message_status  # Replace with your actual import path
     
+    auth_credentials = None
+    if ghl_account_id:
+        auth_credentials = GHLAuthCredentials.objects.filter(pk=ghl_account_id).first()
+
     try:
-        result = update_ghl_message_status(message_id, status, ghl_token)
+        result = update_ghl_message_status(
+            message_id,
+            status,
+            ghl_token,
+            auth_credentials=auth_credentials,
+        )
         
         if result.get('success'):
             return True
@@ -167,7 +177,8 @@ def batch_update_ghl_statuses(self, updates_batch):
                 message_id=update['message_id'],
                 status=update['status'],
                 ghl_token=update['ghl_token'],
-                sms_message_id=update.get('sms_message_id')
+                sms_message_id=update.get('sms_message_id'),
+                ghl_account_id=update.get('ghl_account_id'),
             )
             successful_updates += 1
         except Exception as e:
@@ -183,12 +194,13 @@ def batch_update_ghl_statuses(self, updates_batch):
 
 # Priority queue for urgent updates
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def urgent_update_ghl_message_status(self, message_id, status, ghl_token, sms_message_id=None):
+def urgent_update_ghl_message_status(self, message_id, status, ghl_token, sms_message_id=None, ghl_account_id=None):
     """
     High-priority task for urgent GHL updates (e.g., delivery confirmations)
     """
     return update_ghl_message_status_task.apply(
-        args=[message_id, status, ghl_token, sms_message_id],
+        args=[message_id, status, ghl_token],
+        kwargs={"sms_message_id": sms_message_id, "ghl_account_id": ghl_account_id},
         priority=9  # High priority
     )
 
@@ -238,6 +250,8 @@ def process_sms_message(self, sms_id: str):
             return f"SMS {sms_id} re-queued (insufficient balance)."
 
         # Push inbound message to GHL
+        from core.ghl_auth import ghl_request
+
         ghl_api_url = "https://services.leadconnectorhq.com/conversations/messages/inbound"
         payload = {
             "type": "SMS",
@@ -253,7 +267,13 @@ def process_sms_message(self, sms_id: str):
         }
 
         print(f"📤 Sending inbound SMS {sms.id} to GHL → Payload: {payload}")
-        resp = requests.post(ghl_api_url, json=payload, headers=headers)
+        resp = ghl_request(
+            "POST",
+            ghl_api_url,
+            json=payload,
+            headers=headers,
+            auth_credentials=sms.ghl_account,
+        )
         data = resp.json()
         print(f"📥 GHL Response (status={resp.status_code}): {data}")
 
@@ -365,6 +385,8 @@ def process_mms_inbound_message(self, payload: dict):
             sms.save()
             return f"MMS {sms.id} queued (insufficient balance)"
 
+        from core.ghl_auth import ghl_request
+
         headers = {
             "Authorization": f"Bearer {ghl_account.access_token}",
             "Version": "2021-04-15",
@@ -381,11 +403,13 @@ def process_mms_inbound_message(self, payload: dict):
             try:
                 upload_url = "https://services.leadconnectorhq.com/conversations/messages/upload"
                 file_data = base64.b64decode(b64)
-                resp = requests.post(
+                resp = ghl_request(
+                    "POST",
                     upload_url,
                     headers={k: v for k, v in headers.items() if k.lower() != "content-type"},
                     data={"conversationId": ghl_conversation_id},
                     files={"fileAttachment": (name, file_data)},
+                    auth_credentials=ghl_account,
                 )
                 if resp.status_code in (200, 201):
                     data = resp.json()
@@ -406,7 +430,13 @@ def process_mms_inbound_message(self, payload: dict):
         if attachments:
             inbound_payload["attachments"] = attachments
 
-        resp = requests.post(inbound_url, json=inbound_payload, headers={**headers, "Content-Type": "application/json"})
+        resp = ghl_request(
+            "POST",
+            inbound_url,
+            json=inbound_payload,
+            headers={**headers, "Content-Type": "application/json"},
+            auth_credentials=ghl_account,
+        )
         resp_data = resp.json() if resp.text else {}
 
         if resp.status_code in (200, 201):
