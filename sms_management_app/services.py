@@ -2,6 +2,7 @@ import requests
 import base64
 import json
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 from .models import TransmitSMSAccount, GHLTransmitSMSMapping, SMSMessage, WebhookLog
 from core.models import GHLAuthCredentials, Wallet
@@ -235,6 +236,44 @@ class TransmitSMSService:
             if name and client.get('name') == name:
                 return client
         return None
+
+    def _get_dedicated_number_cached(self, transmit_account):
+        """
+        Return the dedicated number for the account, or None if none exists.
+        Result is cached per account for 5 minutes to avoid hammering get-numbers.json
+        on every single webhook during bulk sends.
+        Sentinel value '' means "checked and no dedicated number found".
+        """
+        cache_key = f"dedicated_num_{transmit_account.id}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached or None  # '' → None
+
+        dedicated_number = None
+        try:
+            resp = self.get_dedicated_numbers(
+                filter_type="owned",
+                api_key=transmit_account.api_key,
+                api_secret=transmit_account.api_secret,
+            )
+            print(f"[DEBUG] Dedicated number API response: {resp}")
+            if resp.get("success"):
+                numbers = resp.get("data", {}).get("numbers", [])
+                if isinstance(numbers, list) and numbers:
+                    dedicated_number = numbers[0].get("number")
+                    print(f"[INFO] Using dedicated number: {dedicated_number}")
+                else:
+                    print("[INFO] No dedicated number found for this account.")
+            else:
+                print(f"[WARNING] Failed to fetch dedicated numbers: {resp.get('error')}")
+        except Exception as e:
+            print(f"[EXCEPTION] Could not fetch dedicated number: {str(e)}")
+            # Don't cache on exception — transient failure (e.g. 429)
+            return None
+
+        cache.set(cache_key, dedicated_number or '', 300)
+        return dedicated_number
+
     def send_sms(
         self, message, to_number, from_number, transmit_account,
         dlr_callback=None, reply_callback=None, sms_message=None, **kwargs
@@ -246,53 +285,27 @@ class TransmitSMSService:
             transmit_account.api_secret
         )
 
-        # STEP 1: Try to fetch dedicated numbers for the account
-        dedicated_number = None
-        try:
-            dedicated_response = self.get_dedicated_numbers(
-                filter_type="owned",
-                api_key=transmit_account.api_key,
-                api_secret=transmit_account.api_secret
-            )
+        # STEP 1: Resolve dedicated number (cached — one API call per 5 min per account)
+        dedicated_number = self._get_dedicated_number_cached(transmit_account)
 
-            print(f"[DEBUG] Dedicated number API response: {dedicated_response}")
-
-            if dedicated_response.get("success"):
-                data = dedicated_response.get("data", {})
-                numbers = data.get("numbers", [])
-                if isinstance(numbers, list) and len(numbers) > 0:
-                    dedicated_number = numbers[0].get("number")
-                    print(f"[INFO] Using dedicated number: {dedicated_number}")
-                else:
-                    print("[INFO] No dedicated number found for this account.")
-            else:
-                print(f"[WARNING] Failed to fetch dedicated numbers: {dedicated_response.get('error')}")
-        except Exception as e:
-            print(f"[EXCEPTION] Could not fetch dedicated number: {str(e)}")
-
-        # STEP 2: Use dedicated number if available
+        # STEP 2: Record which sender we're using
         if dedicated_number:
             from_number = dedicated_number
-            sms_message.from_number=from_number
+            sms_message.from_number = from_number
         else:
-            sms_message.from_number="Shared Number"
+            sms_message.from_number = "Shared Number"
         sms_message.save()
 
         # STEP 3: Format numbers
-        print("from number (before):", from_number)
-        print("to number (before):", to_number)
         to_number = format_international(to_number)
-        from_number = format_international(from_number)
-        print("from number (after):", from_number)
-        print("to number (after):", to_number)
+        if dedicated_number:
+            from_number = format_international(from_number)
 
         def _make_request(payload):
-            """Helper to send POST request"""
             try:
                 response = requests.post(url, data=payload, headers=headers)
                 print(f"➡️ Sending request with payload: {payload}")
                 print(f"⬅️ Response [{response.status_code}]: {response.text}")
-
                 response.raise_for_status()
                 result = response.json()
                 return {
@@ -301,34 +314,51 @@ class TransmitSMSService:
                     'message_id': result.get('message_id')
                 }
             except requests.exceptions.RequestException as e:
+                response_text = getattr(e.response, "text", None)
+                human_error = str(e)
+                error_code = None
+                if response_text:
+                    try:
+                        err_json = json.loads(response_text)
+                        error_code = err_json.get("error", {}).get("code")
+                        description = err_json.get("error", {}).get("description") or err_json.get("description")
+                        if error_code == "RECIPIENTS_ERROR" and isinstance(description, dict):
+                            reason = description.get("reason", "Unknown recipient error")
+                            human_error = f"Recipient error: {reason}"
+                        elif error_code == "BAD_CALLER_ID":
+                            human_error = "BAD_CALLER_ID: sender number is inactive or invalid"
+                        elif description and isinstance(description, str):
+                            human_error = description
+                        elif error_code:
+                            human_error = error_code
+                    except Exception:
+                        pass
                 return {
                     'success': False,
-                    'error': str(e),
-                    'response_text': getattr(e.response, "text", None)
+                    'error': human_error,
+                    'error_code': error_code,
+                    'response_text': response_text,
                 }
 
-        # First attempt WITH from_number
-        data = {
-            'message': message,
-            'to': to_number,
-            'from': from_number,
-        }
-        
+        # Build payload — only include 'from' if we have a real dedicated number
+        data = {'message': message, 'to': to_number}
+        if dedicated_number:
+            data['from'] = from_number
         if dlr_callback:
             data['dlr_callback'] = dlr_callback
         if reply_callback:
             data['reply_callback'] = reply_callback
         data.update(kwargs)
 
-        print("🚀 First attempt with from_number")
         result = _make_request(data)
 
-        # Retry without from_number if BAD_CALLER_ID error
-        if not result['success'] and result['response_text']:
+        # Safety net: if a (possibly stale cached) dedicated number is rejected, retry without it
+        if not result['success'] and result.get('response_text'):
             try:
-                error_json = json.loads(result['response_text'])
-                if error_json.get("error", {}).get("code") == "BAD_CALLER_ID":
-                    print("⚠️ BAD_CALLER_ID detected. Retrying without 'from'...")
+                error_code = json.loads(result['response_text']).get("error", {}).get("code")
+                if error_code == "BAD_CALLER_ID":
+                    print("⚠️ BAD_CALLER_ID detected. Clearing cache and retrying without 'from'...")
+                    cache.delete(f"dedicated_num_{transmit_account.id}")
                     data.pop('from', None)
                     result = _make_request(data)
             except Exception as parse_err:
@@ -689,21 +719,12 @@ class GHLIntegrationService:
 
             if is_mms:
                 # --- MMS path ---
-                # Resolve sender (dedicated number) if available
-                try:
-                    dedicated_response = self.transmit_service.get_dedicated_numbers(
-                        filter_type="owned",
-                        api_key=transmit_account.api_key,
-                        api_secret=transmit_account.api_secret,
-                    )
-                    if dedicated_response.get("success"):
-                        numbers = dedicated_response.get("data", {}).get("numbers", [])
-                        if numbers and numbers[0].get("number"):
-                            from_number = numbers[0]["number"]
-                            sms_message.from_number = from_number
-                            sms_message.save(update_fields=["from_number"])
-                except Exception as e:
-                    print(f"[INFO] Could not fetch dedicated number for MMS: {e}")
+                # Resolve sender (dedicated number) if available (same cache as SMS path)
+                dedicated_num = self.transmit_service._get_dedicated_number_cached(transmit_account)
+                if dedicated_num:
+                    from_number = dedicated_num
+                    sms_message.from_number = from_number
+                    sms_message.save(update_fields=["from_number"])
 
                 print("📤 Sending MMS via TransmitSMS v2 API...")
                 result = self.transmit_service.send_mms(
@@ -825,7 +846,11 @@ class GHLIntegrationService:
                     "segments": segments,
                 }
             else:
-                return {"success": False, "error": result["error"]}
+                return {
+                    "success": False,
+                    "error": result.get("error", "Unknown error"),
+                    "error_code": result.get("error_code"),
+                }
         except Exception as e:
             return {"success": False, "error": str(e)}
 

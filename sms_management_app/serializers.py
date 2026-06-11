@@ -86,14 +86,15 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
 class SMSMessageSerializer(serializers.ModelSerializer):
     location_name = serializers.CharField(source="ghl_account.location_name", read_only=True)
     location_id = serializers.CharField(source="ghl_account.location_id", read_only=True)
-    
+
     class Meta:
         model = SMSMessage
         fields = [
             "id", "message_content", "to_number", "from_number",
             "direction", "status", "cost", "segments",
             "sent_at", "delivered_at", "created_at",
-            "location_name", "location_id"
+            "location_name", "location_id", "error_message",
+            "ghl_message_id", "transmit_message_id",
         ]
 
 class WalletSerializer(serializers.ModelSerializer):

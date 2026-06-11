@@ -1967,7 +1967,13 @@ class RetrySMSMessageAPIView(APIView):
 
         service = GHLIntegrationService()
 
-        def _fail_outbound(msg: str, *, http_status=status.HTTP_502_BAD_GATEWAY):
+        # These TransmitSMS error codes indicate the recipient will never accept a message.
+        # Retrying is pointless, so we return 400 instead of 502 to signal a permanent failure.
+        PERMANENT_ERROR_CODES = {"RECIPIENTS_ERROR", "OPTOUT_ERROR"}
+
+        def _fail_outbound(msg: str, *, error_code: str = None, http_status=status.HTTP_502_BAD_GATEWAY):
+            if error_code in PERMANENT_ERROR_CODES:
+                http_status = status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "success": False,
@@ -2029,7 +2035,7 @@ class RetrySMSMessageAPIView(APIView):
             sms.status = "failed"
             sms.error_message = result.get("error", "Unknown error")
             sms.save()
-            return _fail_outbound(sms.error_message or "Send failed")
+            return _fail_outbound(sms.error_message or "Send failed", error_code=result.get("error_code"))
 
         # pending
         if sms.cost:
@@ -2085,7 +2091,7 @@ class RetrySMSMessageAPIView(APIView):
         sms.status = "failed"
         sms.error_message = result.get("error", "Unknown error")
         sms.save()
-        return _fail_outbound(sms.error_message or "Send failed")
+        return _fail_outbound(sms.error_message or "Send failed", error_code=result.get("error_code"))
 
 
 def test_own_number(number, price, ghl_account):
