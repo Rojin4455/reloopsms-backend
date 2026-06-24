@@ -812,6 +812,60 @@ def charge_due_transmit_numbers():
             print(f"🔥 Failed to charge {number.number}: {e}")
 
 
+@shared_task(
+    bind=True,
+    rate_limit="8/s",
+    max_retries=8,
+    default_retry_delay=30,
+    queue="outbound",
+)
+def send_outbound_sms_task(self, sms_id: str):
+    """
+    Rate-limited outbound send to TransmitSMS. Keeps campaign bursts off the
+    webhook thread and protects OAuth/critical workers on the celery queue.
+    """
+    from sms_management_app.models import SMSMessage
+    from sms_management_app.services import GHLIntegrationService
+    from sms_management_app.error_utils import RATE_LIMITED, categorize_failure
+
+    try:
+        sms = SMSMessage.objects.select_related(
+            "ghl_account", "transmit_account"
+        ).get(pk=sms_id)
+    except SMSMessage.DoesNotExist:
+        logger.warning("send_outbound_sms_task: SMS %s not found", sms_id)
+        return {"status": "missing", "sms_id": sms_id}
+
+    if sms.direction != "outbound":
+        return {"status": "skipped", "reason": "not outbound"}
+
+    if sms.status != "pending":
+        return {"status": "skipped", "reason": f"status={sms.status}"}
+
+    service = GHLIntegrationService()
+    result = service.send_outbound_sms(sms, sms.cost, sms.segments)
+
+    if result.get("success"):
+        service.apply_outbound_send_result(sms, result, cost=sms.cost, segments=sms.segments)
+        return {"status": "sent", "sms_id": sms_id}
+
+    error_code = result.get("error_code")
+    category = categorize_failure(result.get("error", ""), error_code)
+
+    if category == RATE_LIMITED and self.request.retries < self.max_retries:
+        countdown = min(30 * (2 ** self.request.retries), 300)
+        logger.warning(
+            "Transmit rate limited for SMS %s, retry %s in %ss",
+            sms_id,
+            self.request.retries + 1,
+            countdown,
+        )
+        raise self.retry(countdown=countdown)
+
+    service.apply_outbound_send_result(sms, result, cost=sms.cost, segments=sms.segments)
+    return {"status": "failed", "sms_id": sms_id, "error": result.get("error")}
+
+
 @shared_task(bind=True)
 def bulk_retry_messages(self, message_ids, include_permanent=False, location_id=None):
     """
@@ -837,8 +891,7 @@ def bulk_retry_messages(self, message_ids, include_permanent=False, location_id=
     if location_id:
         qs = qs.filter(ghl_account__location_id=location_id)
 
-    service = GHLIntegrationService()
-    summary = {"total": 0, "sent": 0, "requeued": 0, "skipped": 0, "failed": 0}
+    summary = {"total": 0, "sent": 0, "requeued": 0, "queued_outbound": 0, "skipped": 0, "failed": 0}
 
     for sms in qs.iterator():
         summary["total"] += 1
@@ -891,34 +944,14 @@ def bulk_retry_messages(self, message_ids, include_permanent=False, location_id=
             sms.error_message = None
             sms.error_category = None
             sms.transmit_message_id = None
+            if sms.status == "failed":
+                sms.status = "pending"
             sms.save(update_fields=[
-                "cost", "segments", "error_message", "error_category", "transmit_message_id"
+                "cost", "segments", "status", "error_message", "error_category", "transmit_message_id"
             ])
 
-            result = service.send_outbound_sms(sms, cost, segments)
-            if result.get("success"):
-                sms.status = "sent"
-                sms.sent_at = timezone.now()
-                tid = result.get("transmit_message_id")
-                if tid:
-                    sms.transmit_message_id = str(tid)
-                sms.save()
-                summary["sent"] += 1
-            else:
-                wallet.refund(
-                    cost,
-                    reference_id=sms.id,
-                    description="Refund: bulk retry failed to send",
-                    segments=segments,
-                    direction="outbound",
-                )
-                sms.status = "failed"
-                sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
-                sms.save()
-                summary["failed"] += 1
-
-            # Stay under provider send-rate limits during large batches (~8/s)
-            time.sleep(0.12)
+            send_outbound_sms_task.delay(str(sms.id))
+            summary["queued_outbound"] += 1
 
         except Exception as e:
             summary["failed"] += 1

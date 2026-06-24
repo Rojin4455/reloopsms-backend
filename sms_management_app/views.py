@@ -123,10 +123,16 @@ def ghl_webhook_handler(request):
             result = service.process_ghl_message(data)
             
             if result['success']:
-                return JsonResponse({
-                    "message": "SMS sent successfully",
-                    "message_id": str(result['message_id'])
-                }, status=200)
+                msg = "SMS queued for delivery" if result.get('queued') else "SMS sent successfully"
+                payload = {
+                    "message": msg,
+                    "message_id": str(result['message_id']),
+                }
+                if result.get('queued'):
+                    payload["queued"] = True
+                if result.get('duplicate'):
+                    payload["duplicate"] = True
+                return JsonResponse(payload, status=200)
             else:
                 return JsonResponse({
                     "error": "Failed to send SMS",
@@ -1860,7 +1866,7 @@ class SendQueuedMessagesAPIView(APIView):
                 "skipped": []
             }
 
-            from sms_management_app.tasks import process_sms_message
+            from sms_management_app.tasks import process_sms_message, send_outbound_sms_task
             from sms_management_app.services import GHLIntegrationService
             from django.utils import timezone
 
@@ -1869,7 +1875,6 @@ class SendQueuedMessagesAPIView(APIView):
                     wallet = Wallet.objects.get(account=sms.ghl_account)
                     
                     if sms.direction == "outbound":
-                        # Handle outbound messages
                         try:
                             cost, segments = wallet.charge_message(
                                 "outbound", 
@@ -1878,37 +1883,19 @@ class SendQueuedMessagesAPIView(APIView):
                             )
                             sms.cost = cost
                             sms.segments = segments
-                            
-                            service = GHLIntegrationService()
-                            result = service.send_outbound_sms(sms, cost, segments)
-                            
-                            if result.get("success"):
-                                sms.status = "sent"
-                                sms.sent_at = timezone.now()
-                                sms.transmit_message_id = result.get("transmit_message_id")
-                                sms.save()
-                                results["successful"].append({
-                                    "message_id": str(sms.id),
-                                    "direction": "outbound",
-                                    "status": "sent"
-                                })
-                            else:
-                                # Refund if failed
-                                wallet.refund(
-                                    cost,
-                                    reference_id=sms.id,
-                                    description="Refund for failed queued SMS",
-                                    segments=sms.segments,
-                                    direction="outbound",
-                                )
-                                sms.status = "failed"
-                                sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
-                                sms.save()
-                                results["failed"].append({
-                                    "message_id": str(sms.id),
-                                    "direction": "outbound",
-                                    "error": result.get("error", "Unknown error")
-                                })
+                            sms.status = "pending"
+                            sms.error_message = None
+                            sms.error_category = None
+                            sms.save(update_fields=[
+                                "cost", "segments", "status", "error_message", "error_category"
+                            ])
+
+                            send_outbound_sms_task.delay(str(sms.id))
+                            results["successful"].append({
+                                "message_id": str(sms.id),
+                                "direction": "outbound",
+                                "status": "queued_for_send",
+                            })
                         except ValidationError as e:
                             # Insufficient funds
                             sms.status = "queued"

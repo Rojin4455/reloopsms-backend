@@ -170,6 +170,7 @@ CELERY_TASK_DEFAULT_QUEUE = "celery"
 CELERY_TASK_ROUTES = {
     "core.tasks.make_api_call": {"queue": "critical"},
     "core.tasks.make_api_call_for_agency_token": {"queue": "critical"},
+    "sms_management_app.tasks.send_outbound_sms_task": {"queue": "outbound"},
 }
 # Lower prefetch helps long-running tasks release the next message sooner (tune per deployment).
 CELERY_WORKER_PREFETCH_MULTIPLIER = config("CELERY_WORKER_PREFETCH_MULTIPLIER", default=2, cast=int)
@@ -180,7 +181,10 @@ from celery.schedules import crontab
 # DatabaseScheduler ignores this dict once PeriodicTask rows exist.
 CELERY_BEAT_SCHEDULE = {
 
-    # OAuth: every 10h on the critical queue (staggered). Run workers with -Q critical,celery.
+    # OAuth: every 10h on the critical queue (staggered). Run workers:
+    #   reloop-celery-critical → -Q critical
+    #   reloop-celery-outbound → -Q outbound
+    #   reloop-celery          → -Q celery
     "make-api-call-every-6-hours": {
         "task": "core.tasks.make_api_call",
         "schedule": crontab(minute=0, hour="*/10"),

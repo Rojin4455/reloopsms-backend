@@ -6,7 +6,7 @@ After=network.target
 User=ubuntu
 Group=www-data
 WorkingDirectory=/home/ubuntu/reloop-backend/reloopsms-backend
-ExecStart=/home/ubuntu/reloop-backend/venv/bin/celery -A reloopsms worker -l info -Q critical --concurrency=4 -n critical@%h
+ExecStart=/home/ubuntu/reloop-backend/venv/bin/celery -A reloopsms worker -l info -Q critical --concurrency=2 --prefetch-multiplier=1 -n critical@%h
 Restart=always
 RestartSec=5
 

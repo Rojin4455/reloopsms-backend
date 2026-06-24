@@ -14,11 +14,23 @@ Copy or diff against `/etc/systemd/system/`:
 sudo cp deploy/systemd/reloop-celerybeat.service /etc/systemd/system/
 sudo cp deploy/systemd/reloop-celery.service /etc/systemd/system/
 sudo cp deploy/systemd/reloop-celery-critical.service /etc/systemd/system/
+sudo cp deploy/systemd/reloop-celery-outbound.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl restart reloop-celerybeat reloop-celery reloop-celery-critical
+sudo systemctl enable reloop-celery-outbound
+sudo systemctl restart reloop-celerybeat reloop-celery reloop-celery-critical reloop-celery-outbound
 ```
 
 Beat **must** include `-S django`. All services use `Restart=always`.
+
+### Queue layout (t3.small)
+
+| Service | Queue | Concurrency | Purpose |
+|---------|-------|-------------|---------|
+| `reloop-celery-critical` | `critical` | 2 | OAuth token refresh only |
+| `reloop-celery-outbound` | `outbound` | 2 @ 8/s | Campaign SMS → Transmit |
+| `reloop-celery` | `celery` | 2 | Inbound, GHL sync, daily jobs, bulk retry enqueue |
+
+Do **not** put `critical` on the general worker — OAuth must stay isolated.
 
 ## Cron (watchdog + OAuth backup)
 

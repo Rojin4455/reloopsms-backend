@@ -755,12 +755,11 @@ class GHLIntegrationService:
         return mapping
 
     def process_ghl_message(self, webhook_data):
-        """Process incoming message from GHL and send via TransmitSMS (SMS or MMS)."""
+        """Accept GHL outbound webhook: charge wallet, queue SMS send via Celery (MMS still sync)."""
         sms_message = None
         try:
             print("🔹 Received webhook_data:", webhook_data)
 
-            # Extract data from GHL webhook
             location_id = webhook_data.get('locationId')
             message_content = webhook_data.get('message') or ''
             to_number = webhook_data.get('phone')
@@ -768,16 +767,29 @@ class GHLIntegrationService:
             conversation_id = webhook_data.get('conversationId')
             contact_id = webhook_data.get('contactId')
             attachments = webhook_data.get('attachments') or []
-
-            # Detect MMS: has attachments (GHL sends type 'SMS' but with attachments = MMS)
             is_mms = bool(attachments)
 
-            # Find GHL account
-            ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
+            # Idempotency: GHL may retry the same webhook.
+            if message_id:
+                existing = SMSMessage.objects.filter(
+                    ghl_message_id=message_id,
+                    direction="outbound",
+                ).first()
+                if existing:
+                    from sms_management_app.tasks import send_outbound_sms_task
 
+                    if existing.status == "pending":
+                        send_outbound_sms_task.delay(str(existing.id))
+                    return {
+                        "success": existing.status in ("pending", "sent", "delivered"),
+                        "message_id": existing.id,
+                        "queued": existing.status == "pending",
+                        "duplicate": True,
+                    }
+
+            ghl_account = GHLAuthCredentials.objects.get(location_id=location_id)
             wallet, _ = Wallet.objects.get_or_create(account=ghl_account)
 
-            # Find TransmitSMS mapping
             try:
                 mapping = GHLTransmitSMSMapping.objects.get(ghl_account=ghl_account)
                 transmit_account = mapping.transmit_account
@@ -785,13 +797,8 @@ class GHLIntegrationService:
                 print("❌ No mapping found for location:", location_id)
                 raise Exception(f"No TransmitSMS account mapped for GHL location {location_id}")
 
-            # Get sender number (dedicated or account default)
             from_number = transmit_account.phone_number
-            if not is_mms:
-                # For SMS, dedicated number is resolved inside send_sms
-                pass
 
-            # Create message record (same model for SMS and MMS)
             sms_message = SMSMessage.objects.create(
                 ghl_account=ghl_account,
                 transmit_account=transmit_account,
@@ -805,14 +812,13 @@ class GHLIntegrationService:
                 status='pending'
             )
 
-            # Charge wallet: for MMS use at least 1 segment; for SMS use message length
             charge_content = message_content if message_content else " "
             try:
                 cost, segments = wallet.charge_message("outbound", charge_content, reference_id=sms_message.id)
                 sms_message.cost = cost
                 sms_message.segments = segments
                 sms_message.save(update_fields=["cost", "segments"])
-            except ValidationError as e:
+            except ValidationError:
                 sms_message.status = "queued"
                 sms_message.cost = 0
                 sms_message.segments = max(1, (len(charge_content) // 160) + 1)
@@ -824,18 +830,14 @@ class GHLIntegrationService:
                     "message_id": sms_message.id,
                 }
 
-            cost = sms_message.cost
-
             if is_mms:
-                # --- MMS path ---
-                # Resolve sender (dedicated number) if available (same cache as SMS path)
                 dedicated_num = self.transmit_service._get_dedicated_number_cached(transmit_account)
                 if dedicated_num:
                     from_number = dedicated_num
                     sms_message.from_number = from_number
                     sms_message.save(update_fields=["from_number"])
 
-                print("📤 Sending MMS via TransmitSMS v2 API...")
+                print("📤 Sending MMS via TransmitSMS v2 API (sync)...")
                 result = self.transmit_service.send_mms(
                     content_urls=attachments,
                     recipient=to_number,
@@ -846,60 +848,31 @@ class GHLIntegrationService:
                     subject="MMS"[:20],
                     track_links=True,
                 )
-            else:
-                # --- SMS path (unchanged) ---
-                dlr_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/dlr-callback/"
-                reply_callback = f"{settings.BASE_URL}/api/sms/transmit-sms/reply-callback/{message_id}/"
-                print("🔗 Callbacks prepared:", dlr_callback, reply_callback)
-                print("📤 Sending SMS via TransmitSMS...")
-                result = self.transmit_service.send_sms(
-                    message=message_content,
-                    to_number=to_number,
-                    from_number=transmit_account.phone_number,
-                    transmit_account=transmit_account,
-                    dlr_callback=dlr_callback,
-                    reply_callback=reply_callback,
-                    sms_message=sms_message,
+                outcome = self.apply_outbound_send_result(
+                    sms_message, result, cost=sms_message.cost, segments=sms_message.segments
                 )
-
-            print("📩 TransmitSMS response:", result)
-
-            if result['success']:
-                sms_message.transmit_message_id = str(result.get('message_id', ''))
-                sms_message.status = 'sent'
-                sms_message.sent_at = timezone.now()
-                sms_message.save()
-
-                return {
-                    'success': True,
-                    'message_id': sms_message.id,
-                    'transmit_message_id': result.get('message_id'),
-                }
-            else:
-                err = result.get("error", "Unknown error")
-                resp_txt = result.get("response_text")
-                if resp_txt and resp_txt not in (err, str(err)):
-                    err_detail = f"{err} | {resp_txt}"
-                else:
-                    err_detail = err
-
-                wallet.refund(
-                    cost,
-                    reference_id=sms_message.id,
-                    description="Refund: message failed to send.",
-                    segments=sms_message.segments,
-                    direction="outbound",
-                )
-                sms_message.status = "failed"
-                sms_message.apply_failure(err_detail, error_code=result.get("error_code"))
-                sms_message.save()
-                print("❌ Send failed:", err)
-
+                if outcome.get("success"):
+                    return {
+                        "success": True,
+                        "message_id": sms_message.id,
+                        "transmit_message_id": sms_message.transmit_message_id,
+                    }
                 return {
                     "success": False,
-                    "error": err,
+                    "error": outcome.get("error"),
                     "message_id": sms_message.id,
                 }
+
+            # SMS: queue for rate-limited Celery worker (campaign-safe).
+            from sms_management_app.tasks import send_outbound_sms_task
+
+            send_outbound_sms_task.delay(str(sms_message.id))
+            print(f"📬 Outbound SMS {sms_message.id} queued for Transmit send")
+            return {
+                "success": True,
+                "message_id": sms_message.id,
+                "queued": True,
+            }
 
         except Exception as e:
             print("🔥 Exception occurred:", str(e))
@@ -962,6 +935,60 @@ class GHLIntegrationService:
                 }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def apply_outbound_send_result(self, sms_message, result, *, cost=None, segments=None):
+        """
+        Persist outbound send outcome: mark sent or failed + refund on failure.
+        Used by the Celery outbound worker and synchronous retry paths.
+        """
+        from core.models import Wallet
+
+        cost = cost if cost is not None else sms_message.cost
+        segments = segments if segments is not None else sms_message.segments
+
+        if result.get("success"):
+            sms_message.transmit_message_id = str(
+                result.get("transmit_message_id") or result.get("message_id") or ""
+            )
+            sms_message.status = "sent"
+            sms_message.sent_at = timezone.now()
+            sms_message.error_message = None
+            sms_message.error_category = None
+            sms_message.save(
+                update_fields=[
+                    "transmit_message_id",
+                    "status",
+                    "sent_at",
+                    "error_message",
+                    "error_category",
+                ]
+            )
+            return {"success": True, "status": "sent"}
+
+        err = result.get("error", "Unknown error")
+        resp_txt = result.get("response_text")
+        if resp_txt and resp_txt not in (err, str(err)):
+            err_detail = f"{err} | {resp_txt}"
+        else:
+            err_detail = err
+
+        wallet = Wallet.objects.filter(account=sms_message.ghl_account).first()
+        if wallet and cost:
+            try:
+                wallet.refund(
+                    cost,
+                    reference_id=sms_message.id,
+                    description="Refund: message failed to send.",
+                    segments=segments,
+                    direction="outbound",
+                )
+            except Exception as refund_err:
+                print("⚠️ Refund after outbound failure:", refund_err)
+
+        sms_message.status = "failed"
+        sms_message.apply_failure(err_detail, error_code=result.get("error_code"))
+        sms_message.save()
+        return {"success": False, "status": "failed", "error": err_detail}
 
 
 
