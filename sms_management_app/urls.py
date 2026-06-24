@@ -20,6 +20,7 @@ urlpatterns = [
     path('setup-transmit-account/', SetupTransmitAccountView.as_view(), name='setup_transmit_account'),
     #messages list
     path('sms-messages/', SMSMessageListView.as_view(), name='sms-message-list'),
+    path('sms-messages/export/', SMSMessageExportCSVView.as_view(), name='sms-message-export'),
     path("wallet/<str:location_id>/add-funds/", wallet_adjust_funds, name="wallet_add_funds"),
     path("wallet/recharge/", wallet_recharge_from_form, name="wallet_recharge_from_form"),
     path("dashboard/analytics/", DashboardAnalyticsView.as_view(), name="dashboard-analytics"),
@@ -51,6 +52,16 @@ urlpatterns = [
         "messages/<uuid:message_id>/retry/",
         RetrySMSMessageAPIView.as_view(),
         name="sms_message_retry",
+    ),
+    path(
+        "messages/bulk-retry/",
+        BulkRetrySMSMessagesAPIView.as_view(),
+        name="sms_message_bulk_retry",
+    ),
+    path(
+        "transmit-balances/refresh/",
+        RefreshTransmitBalancesAPIView.as_view(),
+        name="transmit_balances_refresh",
     ),
 
 ]

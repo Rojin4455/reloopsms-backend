@@ -23,4 +23,5 @@ class SMSMessageFilter(django_filters.FilterSet):
             "ghl_account",
             "location_id",
             "transmitsms_account",
+            "error_category",
         ]

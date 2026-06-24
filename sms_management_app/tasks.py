@@ -64,10 +64,20 @@ class GHLRateLimiter:
             cache.set(day_key, 1, timeout=86400)
 
 
+# Outcome markers returned by _make_ghl_api_call
+_GHL_OK = "ok"
+_GHL_RETRY = "retry"        # transient failure (rate limit / network) — safe to retry
+_GHL_TERMINAL = "terminal"  # permanent rejection (e.g. 422) — retrying is pointless
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_message_id=None, ghl_account_id=None):
+def update_ghl_message_status_task(self, message_id, status, ghl_token=None, sms_message_id=None, ghl_account_id=None):
     """
-    Celery task to update GHL message status with rate limiting
+    Celery task to update GHL message status with rate limiting.
+
+    Note: ``ghl_token`` is accepted for backward compatibility but should be left
+    None — the token is resolved inside the task from ``ghl_account_id`` so the
+    secret is never embedded in task args (which leak into retry exceptions/logs).
     """
     try:
         # Check rate limits
@@ -84,26 +94,33 @@ def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_mess
                 raise self.retry(countdown=3600, exc=Exception(reason))
         
         # Make the API call
-        success = _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=ghl_account_id)
+        outcome = _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=ghl_account_id)
         
-        if success:
+        if outcome == _GHL_OK:
             # Increment counters only on successful request
             GHLRateLimiter.increment_counters()
             logger.info(f"Successfully updated GHL message status for message_id: {message_id}")
             return {"status": "success", "message_id": message_id}
+        elif outcome == _GHL_TERMINAL:
+            # GHL permanently rejected this update (e.g. unsupported status). Retrying
+            # will always fail, so record a diagnostic and stop — do NOT touch
+            # error_message (that holds the real send-failure reason).
+            logger.warning(f"GHL permanently rejected status update for message_id: {message_id}. Not retrying.")
+            if sms_message_id:
+                _record_ghl_sync_error(sms_message_id, "GHL rejected status update (non-retryable)")
+            return {"status": "skipped", "reason": "GHL rejected status update", "message_id": message_id}
         else:
-            # If API call failed, retry
+            # Transient failure — retry
             logger.warning(f"GHL API call failed for message_id: {message_id}. Retrying...")
             raise self.retry(countdown=3)
             
     except Exception as exc:
         logger.error(f"Error in update_ghl_message_status_task: {exc}")
         
-        # Update local SMS message status if provided
+        # Record GHL-sync diagnostics in a SEPARATE field so we never clobber the
+        # real failure reason stored in error_message.
         if sms_message_id:
-            _update_local_sms_status(sms_message_id, f"GHL update failed: {str(exc)}")
-        
-        # Don't retry for certain errors
+            _record_ghl_sync_error(sms_message_id, f"GHL status sync failed: {str(exc)}")
         if "Daily rate limit" in str(exc) and self.request.retries >= 3:
             logger.error(f"Giving up on GHL update after daily rate limit. Message ID: {message_id}")
             return {"status": "failed", "reason": "Daily rate limit exceeded", "message_id": message_id}
@@ -111,9 +128,13 @@ def update_ghl_message_status_task(self, message_id, status, ghl_token, sms_mess
         raise self.retry(exc=exc)
 
 
-def _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=None):
+def _make_ghl_api_call(message_id, status, ghl_token=None, ghl_account_id=None):
     """
-    Make the actual API call to GHL using existing function
+    Make the actual API call to GHL using existing function.
+
+    Returns one of: _GHL_OK, _GHL_RETRY, _GHL_TERMINAL.
+    The bearer token is resolved from ``ghl_account_id`` when not supplied, so we
+    never need the raw token passed through task args.
     """
     from core.models import GHLAuthCredentials
     from sms_management_app.services import update_ghl_message_status  # Replace with your actual import path
@@ -121,6 +142,14 @@ def _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=None):
     auth_credentials = None
     if ghl_account_id:
         auth_credentials = GHLAuthCredentials.objects.filter(pk=ghl_account_id).first()
+
+    # Resolve token internally — avoid passing secrets through Celery args.
+    if not ghl_token and auth_credentials:
+        ghl_token = auth_credentials.access_token
+
+    if not ghl_token:
+        logger.error(f"No GHL token available for message_id {message_id} (account {ghl_account_id})")
+        return _GHL_TERMINAL
 
     try:
         result = update_ghl_message_status(
@@ -131,35 +160,46 @@ def _make_ghl_api_call(message_id, status, ghl_token, ghl_account_id=None):
         )
         
         if result.get('success'):
-            return True
-        else:
-            error_msg = result.get('error', 'Unknown error')
-            
-            # Check if it's a rate limit error
-            if '429' in str(error_msg) or 'rate limit' in str(error_msg).lower():
-                logger.warning(f"GHL rate limited for message_id: {message_id}")
-                return False
-            else:
-                logger.error(f"GHL API error for message_id {message_id}: {error_msg}")
-                return False
+            return _GHL_OK
+
+        error_msg = result.get('error', 'Unknown error')
+        status_code = result.get('status_code')
+
+        # 422 = GHL rejected the payload (e.g. unsupported status value). Permanent.
+        if status_code == 422:
+            logger.error(f"GHL rejected status update (422) for message_id {message_id}: {error_msg}")
+            return _GHL_TERMINAL
+
+        # Rate limit / network → retry
+        if '429' in str(error_msg) or 'rate limit' in str(error_msg).lower():
+            logger.warning(f"GHL rate limited for message_id: {message_id}")
+            return _GHL_RETRY
+
+        logger.error(f"GHL API error for message_id {message_id}: {error_msg}")
+        return _GHL_RETRY
             
     except Exception as e:
         logger.error(f"Exception calling GHL API for message_id {message_id}: {e}")
-        return False
+        return _GHL_RETRY
 
 
-def _update_local_sms_status(sms_message_id, error_message):
+def _record_ghl_sync_error(sms_message_id, sync_error):
     """
-    Update local SMS message with error information
+    Record a GHL status-sync diagnostic on the message.
+
+    IMPORTANT: writes to ``ghl_sync_error`` only — never ``error_message`` — so the
+    genuine send-failure reason shown to users is preserved.
     """
+    from sms_management_app.error_sanitize import sanitize_error_text
+
     try:
-        from sms_management_app.models import SMSMessage  # Replace with your actual import
-        sms_message = SMSMessage.objects.get(id=sms_message_id)
-        sms_message.error_message = error_message
-        sms_message.updated_at   = timezone.now()
-        sms_message.save()
+        from sms_management_app.models import SMSMessage
+        SMSMessage.objects.filter(id=sms_message_id).update(
+            ghl_sync_error=sanitize_error_text(sync_error or "")[:2000],
+            updated_at=timezone.now(),
+        )
     except Exception as e:
-        logger.error(f"Failed to update local SMS status: {e}")
+        logger.error(f"Failed to record GHL sync error: {e}")
 
 
 @shared_task(bind=True, max_retries=3)
@@ -172,11 +212,11 @@ def batch_update_ghl_statuses(self, updates_batch):
     
     for update in updates_batch:
         try:
-            # Queue individual update task
+            # Queue individual update task. Token is resolved inside the task from
+            # ghl_account_id — never pass the raw token through task args.
             update_ghl_message_status_task.delay(
                 message_id=update['message_id'],
                 status=update['status'],
-                ghl_token=update['ghl_token'],
                 sms_message_id=update.get('sms_message_id'),
                 ghl_account_id=update.get('ghl_account_id'),
             )
@@ -194,12 +234,13 @@ def batch_update_ghl_statuses(self, updates_batch):
 
 # Priority queue for urgent updates
 @shared_task(bind=True, max_retries=2, default_retry_delay=30)
-def urgent_update_ghl_message_status(self, message_id, status, ghl_token, sms_message_id=None, ghl_account_id=None):
+def urgent_update_ghl_message_status(self, message_id, status, ghl_token=None, sms_message_id=None, ghl_account_id=None):
     """
-    High-priority task for urgent GHL updates (e.g., delivery confirmations)
+    High-priority task for urgent GHL updates (e.g., delivery confirmations).
+    Token is resolved inside the task from ghl_account_id; not forwarded as an arg.
     """
     return update_ghl_message_status_task.apply(
-        args=[message_id, status, ghl_token],
+        args=[message_id, status],
         kwargs={"sms_message_id": sms_message_id, "ghl_account_id": ghl_account_id},
         priority=9  # High priority
     )
@@ -291,7 +332,7 @@ def process_sms_message(self, sms_id: str):
                 direction="inbound",
             )
             sms.status = "failed"
-            sms.error_message = data.get("error") or str(data)
+            sms.apply_failure(data.get("error") or str(data))
             print(f"❌ Failed to deliver inbound SMS {sms.id}, refunded {sms.cost}. Error={sms.error_message}")
 
         sms.save()
@@ -453,7 +494,7 @@ def process_mms_inbound_message(self, payload: dict):
                 direction="inbound",
             )
             sms.status = "failed"
-            sms.error_message = resp_data.get("error") or str(resp_data) or resp.text
+            sms.apply_failure(resp_data.get("error") or str(resp_data) or resp.text)
             sms.save()
             return f"MMS {sms.id} failed: {sms.error_message}"
 
@@ -769,3 +810,119 @@ def charge_due_transmit_numbers():
                 print(f"⚠️ Insufficient funds to charge {number.number} ({charge_amount} required)")
         except Exception as e:
             print(f"🔥 Failed to charge {number.number}: {e}")
+
+
+@shared_task(bind=True)
+def bulk_retry_messages(self, message_ids, include_permanent=False, location_id=None):
+    """
+    Retry a batch of failed/pending messages.
+
+    - Outbound failed: re-charge wallet (failed rows were refunded), send again.
+    - Outbound pending: send using existing charge (don't double-charge).
+    - Inbound failed: re-queue for delivery to GHL.
+    - Permanent categories (opt-out, invalid recipient, auth/config) are skipped
+      unless include_permanent=True, so we never burn credit on hopeless sends.
+
+    A small inter-send delay keeps us under TransmitSMS send-rate limits.
+    """
+    from sms_management_app.models import SMSMessage
+    from sms_management_app.services import GHLIntegrationService
+    from sms_management_app.error_utils import is_retryable_category
+    from core.models import Wallet
+    from django.core.exceptions import ValidationError
+
+    qs = SMSMessage.objects.filter(
+        id__in=message_ids, status__in=["failed", "pending"]
+    ).select_related("ghl_account", "transmit_account")
+    if location_id:
+        qs = qs.filter(ghl_account__location_id=location_id)
+
+    service = GHLIntegrationService()
+    summary = {"total": 0, "sent": 0, "requeued": 0, "skipped": 0, "failed": 0}
+
+    for sms in qs.iterator():
+        summary["total"] += 1
+
+        # Skip hopeless categories unless explicitly forced
+        if (
+            not include_permanent
+            and sms.error_category
+            and not is_retryable_category(sms.error_category)
+        ):
+            summary["skipped"] += 1
+            continue
+
+        try:
+            if sms.direction == "inbound":
+                if sms.status == "failed":
+                    sms.status = "queued"
+                    sms.error_message = None
+                    sms.error_category = None
+                    sms.save(update_fields=["status", "error_message", "error_category"])
+                    process_sms_message.delay(str(sms.id))
+                    summary["requeued"] += 1
+                else:
+                    summary["skipped"] += 1
+                continue
+
+            if sms.direction != "outbound":
+                summary["skipped"] += 1
+                continue
+
+            wallet = Wallet.objects.get(account=sms.ghl_account)
+
+            # Failed rows were refunded on failure → charge again. Pending rows that
+            # already carry a cost are still debited → reuse it (no double charge).
+            if sms.status == "failed" or not sms.cost:
+                try:
+                    cost, segments = wallet.charge_message(
+                        "outbound", sms.message_content, reference_id=sms.id
+                    )
+                except ValidationError as e:
+                    sms.apply_failure(f"Insufficient balance: {e}")
+                    sms.save(update_fields=["error_message", "error_category"])
+                    summary["failed"] += 1
+                    continue
+                sms.cost = cost
+                sms.segments = segments
+            else:
+                cost, segments = sms.cost, sms.segments
+
+            sms.error_message = None
+            sms.error_category = None
+            sms.transmit_message_id = None
+            sms.save(update_fields=[
+                "cost", "segments", "error_message", "error_category", "transmit_message_id"
+            ])
+
+            result = service.send_outbound_sms(sms, cost, segments)
+            if result.get("success"):
+                sms.status = "sent"
+                sms.sent_at = timezone.now()
+                tid = result.get("transmit_message_id")
+                if tid:
+                    sms.transmit_message_id = str(tid)
+                sms.save()
+                summary["sent"] += 1
+            else:
+                wallet.refund(
+                    cost,
+                    reference_id=sms.id,
+                    description="Refund: bulk retry failed to send",
+                    segments=segments,
+                    direction="outbound",
+                )
+                sms.status = "failed"
+                sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
+                sms.save()
+                summary["failed"] += 1
+
+            # Stay under provider send-rate limits during large batches (~8/s)
+            time.sleep(0.12)
+
+        except Exception as e:
+            summary["failed"] += 1
+            logger.exception(f"bulk_retry_messages: error retrying {sms.id}: {e}")
+
+    logger.info(f"bulk_retry_messages complete: {summary}")
+    return summary

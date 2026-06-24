@@ -149,7 +149,116 @@ class TransmitSMSService:
         except requests.exceptions.RequestException as e:
             print(f"Error fetching clients: {e}")
             return None
-        
+
+    def get_balance(self, api_key=None, api_secret=None):
+        """
+        Fetch account balance from TransmitSMS.
+        API: GET https://api.transmitsms.com/get-balance.json
+
+        Uses agency credentials from settings by default. Pass api_key/api_secret
+        to check a specific subaccount (e.g. a client_pays client).
+
+        Returns:
+            dict: {
+                'success': bool,
+                'balance': Decimal|None,
+                'currency': str|None,
+                'data': dict,
+                'error': str (if failed),
+            }
+        """
+        from decimal import Decimal
+
+        url = f"{self.base_url}/get-balance.json"
+        headers = self._get_auth_header(api_key=api_key, api_secret=api_secret)
+
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            print(f"[get_balance] Response [{response.status_code}]: {response.text}")
+            response.raise_for_status()
+            result = response.json()
+
+            error_code = result.get("error", {}).get("code")
+            if error_code and error_code != "SUCCESS":
+                description = result.get("error", {}).get("description", "Unknown error")
+                return {
+                    "success": False,
+                    "error": description,
+                    "data": result,
+                }
+
+            balance_raw = result.get("balance")
+            balance = None
+            if balance_raw is not None:
+                try:
+                    balance = Decimal(str(balance_raw))
+                except Exception:
+                    balance = balance_raw
+
+            return {
+                "success": True,
+                "balance": balance,
+                "currency": result.get("currency"),
+                "data": result,
+            }
+        except requests.exceptions.RequestException as e:
+            response_text = getattr(getattr(e, "response", None), "text", None)
+            return {
+                "success": False,
+                "error": str(e),
+                "response_text": response_text,
+                "data": {},
+            }
+
+    def get_client(self, client_id, api_key=None, api_secret=None):
+        """
+        Fetch a subaccount from TransmitSMS (agency auth).
+        API: POST https://api.transmitsms.com/get-client.json
+        """
+        from decimal import Decimal
+
+        url = f"{self.base_url}/get-client.json"
+        headers = self._get_auth_header(api_key=api_key, api_secret=api_secret)
+        data = {"client_id": str(client_id)}
+
+        try:
+            response = requests.post(url, data=data, headers=headers, timeout=30)
+            print(f"[get_client] Response [{response.status_code}]: {response.text}")
+            response.raise_for_status()
+            result = response.json()
+
+            error_code = result.get("error", {}).get("code")
+            if error_code and error_code != "SUCCESS":
+                description = result.get("error", {}).get("description", "Unknown error")
+                return {"success": False, "error": description, "data": result}
+
+            balance_raw = result.get("balance")
+            balance = None
+            if balance_raw is not None:
+                try:
+                    balance = Decimal(str(balance_raw))
+                except Exception:
+                    balance = balance_raw
+
+            client_pays_raw = result.get("client_pays")
+            client_pays = str(client_pays_raw).lower() in ("true", "1", "yes")
+
+            return {
+                "success": True,
+                "balance": balance,
+                "currency": result.get("currency"),
+                "client_pays": client_pays,
+                "name": result.get("name"),
+                "data": result,
+            }
+        except requests.exceptions.RequestException as e:
+            response_text = getattr(getattr(e, "response", None), "text", None)
+            return {
+                "success": False,
+                "error": str(e),
+                "response_text": response_text,
+                "data": {},
+            }
 
     def purchase_number(self, number, forward_url=None, api_key=None, api_secret=None):
         """
@@ -782,7 +891,7 @@ class GHLIntegrationService:
                     direction="outbound",
                 )
                 sms_message.status = "failed"
-                sms_message.error_message = err_detail[:2000] if isinstance(err_detail, str) else str(err_detail)[:2000]
+                sms_message.apply_failure(err_detail, error_code=result.get("error_code"))
                 sms_message.save()
                 print("❌ Send failed:", err)
 
@@ -811,8 +920,8 @@ class GHLIntegrationService:
                             except Exception as refund_err:
                                 print("⚠️ Refund after send error:", refund_err)
                         sms_message.status = "failed"
-                        sms_message.error_message = str(e)[:2000]
-                        sms_message.save(update_fields=["status", "error_message"])
+                        sms_message.apply_failure(str(e))
+                        sms_message.save(update_fields=["status", "error_message", "error_category"])
                 except Exception as cleanup_err:
                     print("⚠️ Pending message cleanup:", cleanup_err)
             return {

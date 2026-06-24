@@ -50,11 +50,44 @@ class WalletSerializer(serializers.ModelSerializer):
         read_only_fields = ["balance", "updated_at"]
 
 
+class TransmitBillingSerializer(serializers.Serializer):
+    account_id = serializers.CharField(allow_null=True)
+    account_name = serializers.CharField(allow_null=True)
+    balance = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True)
+    currency = serializers.CharField(allow_null=True)
+    client_pays = serializers.BooleanField()
+    billing_type = serializers.CharField()
+    balance_synced_at = serializers.DateTimeField(allow_null=True)
+
+
 class GHLAuthCredentialsSerializer(serializers.ModelSerializer):
     wallet = WalletSerializer()
+    transmit_billing = serializers.SerializerMethodField()
+
     class Meta:
         model = GHLAuthCredentials
         exclude = ["access_token", "refresh_token", "expires_in"]
+
+    def get_transmit_billing(self, obj):
+        from decimal import Decimal
+
+        try:
+            transmit_account = obj.transmit_sms_mapping.transmit_account
+        except Exception:
+            return None
+
+        balance = transmit_account.balance or Decimal("0")
+        client_pays = bool(transmit_account.client_pays)
+
+        return {
+            "account_id": transmit_account.account_id,
+            "account_name": transmit_account.account_name,
+            "balance": balance,
+            "currency": transmit_account.currency or "AUD",
+            "client_pays": client_pays,
+            "billing_type": "Client Pays" if client_pays else "I Pay",
+            "balance_synced_at": transmit_account.balance_synced_at,
+        }
     
     def update(self, instance, validated_data):
         wallet_data = validated_data.pop("wallet", None)

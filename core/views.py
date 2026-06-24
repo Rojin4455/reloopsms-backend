@@ -389,9 +389,24 @@ class GHLAuthCredentialsListView(generics.ListAPIView):
     """
     GET /api/ghl-auth-credentials/ → List all GHL credentials
     """
-    queryset = GHLAuthCredentials.objects.all()
+    queryset = GHLAuthCredentials.objects.select_related(
+        "wallet",
+        "transmit_sms_mapping__transmit_account",
+    ).order_by("location_name", "id")
     serializer_class = GHLAuthCredentialsSerializer
     permission_classes = [IsAdminUser]
+
+    def list(self, request, *args, **kwargs):
+        from transmitsms.models import TransmitAgencyBalance
+
+        response = super().list(request, *args, **kwargs)
+        agency = TransmitAgencyBalance.get_snapshot()
+        response.data["transmit_agency_balance"] = {
+            "balance": agency.balance,
+            "currency": agency.currency,
+            "synced_at": agency.synced_at,
+        }
+        return response
 
 
 class GHLAuthCredentialsDetailView(generics.RetrieveUpdateDestroyAPIView):

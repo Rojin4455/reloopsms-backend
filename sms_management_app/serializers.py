@@ -86,6 +86,8 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
 class SMSMessageSerializer(serializers.ModelSerializer):
     location_name = serializers.CharField(source="ghl_account.location_name", read_only=True)
     location_id = serializers.CharField(source="ghl_account.location_id", read_only=True)
+    error_category_label = serializers.SerializerMethodField()
+    is_retryable = serializers.SerializerMethodField()
 
     class Meta:
         model = SMSMessage
@@ -93,9 +95,35 @@ class SMSMessageSerializer(serializers.ModelSerializer):
             "id", "message_content", "to_number", "from_number",
             "direction", "status", "cost", "segments",
             "sent_at", "delivered_at", "created_at",
-            "location_name", "location_id", "error_message",
+            "location_name", "location_id", "error_message", "ghl_sync_error",
+            "error_category", "error_category_label", "is_retryable",
             "ghl_message_id", "transmit_message_id",
         ]
+
+    def get_error_category_label(self, obj):
+        from sms_management_app.error_utils import category_label
+        return category_label(obj.error_category) if obj.error_category else None
+
+    def get_is_retryable(self, obj):
+        """Whether a bulk/manual retry is worthwhile for this message."""
+        from sms_management_app.error_utils import is_retryable_category
+        if obj.status not in ("failed", "pending"):
+            return False
+        if obj.error_category:
+            return is_retryable_category(obj.error_category)
+        return True
+
+    def to_representation(self, instance):
+        from sms_management_app.error_sanitize import sanitize_error_text
+
+        data = super().to_representation(instance)
+        if data.get("error_message"):
+            data["error_message"] = sanitize_error_text(
+                data["error_message"], placeholder_for_polluted=True
+            )
+        if data.get("ghl_sync_error"):
+            data["ghl_sync_error"] = sanitize_error_text(data["ghl_sync_error"])
+        return data
 
 class WalletSerializer(serializers.ModelSerializer):
     recent_transactions = serializers.SerializerMethodField()

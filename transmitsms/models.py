@@ -14,6 +14,10 @@ class TransmitSMSAccount(models.Model):
     api_secret = models.CharField(max_length=255)
     account_id = models.CharField(max_length=100, unique=True)
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    # True = legacy "Client Pays" in TransmitSMS (wholesale debited from this subaccount).
+    # False = "I Pay" / agency wholesale wallet is debited instead.
+    client_pays = models.BooleanField(default=False)
+    balance_synced_at = models.DateTimeField(null=True, blank=True)
     currency = models.CharField(max_length=10, default='AUD')
     timezone = models.CharField(max_length=50, default='Australia/Brisbane')
     is_active = models.BooleanField(default=True)
@@ -22,6 +26,28 @@ class TransmitSMSAccount(models.Model):
 
     def __str__(self):
         return f"TransmitSMS Account {self.account_name} ({self.account_id})"
+
+
+class TransmitAgencyBalance(models.Model):
+    """
+    Cached agency wholesale balance from TransmitSMS (singleton row, pk=1).
+    Updated manually via the admin refresh button — no Celery sync.
+    """
+    balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    currency = models.CharField(max_length=10, default="AUD")
+    synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Transmit agency balance snapshot"
+        verbose_name_plural = "Transmit agency balance snapshots"
+
+    @classmethod
+    def get_snapshot(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"Agency balance: {self.balance} {self.currency}"
 
 
 class TransmitSMSMMSWebhook(models.Model):

@@ -58,7 +58,24 @@ class SMSMessage(models.Model):
     # Status tracking
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     delivery_status = models.TextField(null=True, blank=True)
+    # Real reason the message itself failed (carrier/opt-out/billing/etc.). Shown to users.
     error_message = models.TextField(null=True, blank=True)
+    # Machine-readable bucket for the failure (opt_out, provider_billing, rate_limited, ...).
+    # Drives filtering and whether a message is worth retrying. See error_utils.py.
+    error_category = models.CharField(max_length=32, null=True, blank=True, db_index=True)
+    # Separate diagnostic for failures while mirroring status into GHL. Must NOT
+    # overwrite error_message, otherwise the real failure reason is lost.
+    ghl_sync_error = models.TextField(null=True, blank=True)
+
+    def apply_failure(self, error_message, error_code=None):
+        """
+        Set error_message + error_category consistently. Does NOT set status or
+        save — callers control those. Keeps categorization logic in one place.
+        """
+        from sms_management_app.error_utils import categorize_failure
+        msg = "" if error_message is None else str(error_message)
+        self.error_message = msg[:2000]
+        self.error_category = categorize_failure(msg, error_code)
 
     cost = models.DecimalField(max_digits=8, decimal_places=3, default=0)
     segments = models.PositiveIntegerField(default=1)

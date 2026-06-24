@@ -17,7 +17,7 @@ from rest_framework.generics import ListAPIView
 from rest_framework import generics, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .filters import SMSMessageFilter  # import your filter
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAdminUser
 from django.db.models import Sum,Avg
 from rest_framework.pagination import PageNumberPagination
 
@@ -233,11 +233,12 @@ def transmit_dlr_callback(request):
                 sms_message.status = "delivered"
                 sms_message.delivered_at = timezone.now()
             elif mapped_status == "failed":
-                sms_message.status = "failed"
-                sms_message.error_message = (
+                reason = (
                     (data.get("status") or {}).get("description") if isinstance(data.get("status"), dict)
                     else data.get("error_description", "Delivery failed")
                 )
+                sms_message.status = "failed"
+                sms_message.apply_failure(reason)
 
                 wallet = getattr(sms_message.ghl_account, "wallet", None)
                 if wallet and sms_message.cost:
@@ -268,10 +269,11 @@ def transmit_dlr_callback(request):
 
             sms_message.save()
 
+            # Token is resolved inside the task from ghl_account_id — do not pass the
+            # raw access token (it would leak into Celery retry exceptions/logs).
             update_ghl_message_status_task.delay(
                 message_id=sms_message.ghl_message_id,
                 status=sms_message.status,
-                ghl_token=sms_message.ghl_account.access_token,
                 sms_message_id=str(sms_message.id),
                 ghl_account_id=str(sms_message.ghl_account_id),
             )
@@ -412,6 +414,98 @@ class SMSMessageListView(generics.ListAPIView):
 
     # Allow ordering by fields
     ordering_fields = ["created_at", "sent_at", "delivered_at", "status", "direction"]
+
+
+import csv
+from django.http import StreamingHttpResponse
+from django.db.models import Q
+
+
+class _CSVEcho:
+    """File-like object that returns the value written, for streaming CSV."""
+    def write(self, value):
+        return value
+
+
+class SMSMessageExportCSVView(APIView):
+    """
+    Stream the current (filtered) SMS message list as a CSV download.
+
+    Honours the same query params as SMSMessageListView (status, direction,
+    location_id, created_at__gte/__lte, search, ordering) so "export" always
+    matches what the user is currently filtering on.
+    """
+    permission_classes = [AllowAny]
+
+    SEARCH_FIELDS = [
+        "to_number", "from_number", "message_content",
+        "ghl_account__location_name", "transmit_account__account_name",
+    ]
+    ALLOWED_ORDERING = {
+        "created_at", "-created_at", "sent_at", "-sent_at",
+        "delivered_at", "-delivered_at", "status", "-status",
+        "direction", "-direction", "from_number", "-from_number",
+    }
+    HEADER = [
+        "created_at", "direction", "status", "from_number", "to_number",
+        "message_content", "error_category", "error_message", "ghl_sync_error",
+        "location_name", "location_id",
+        "cost", "segments", "sent_at", "delivered_at",
+        "ghl_message_id", "transmit_message_id",
+    ]
+
+    def get(self, request):
+        qs = SMSMessage.objects.select_related("ghl_account", "transmit_account").all()
+
+        # Apply the same filters as the list view
+        filterset = SMSMessageFilter(request.GET, queryset=qs)
+        qs = filterset.qs
+
+        # Apply search across the same fields as the list view
+        search = request.GET.get("search")
+        if search:
+            search = search.strip()
+            search_q = Q()
+            for field in self.SEARCH_FIELDS:
+                search_q |= Q(**{f"{field}__icontains": search})
+            qs = qs.filter(search_q)
+
+        # Apply ordering (whitelisted), default newest first
+        ordering = request.GET.get("ordering")
+        qs = qs.order_by(ordering if ordering in self.ALLOWED_ORDERING else "-created_at")
+
+        writer = csv.writer(_CSVEcho())
+
+        def row_iter():
+            from sms_management_app.error_sanitize import sanitize_error_text
+
+            yield writer.writerow(self.HEADER)
+            for m in qs.iterator():
+                ghl = m.ghl_account
+                yield writer.writerow([
+                    m.created_at.isoformat() if m.created_at else "",
+                    m.direction,
+                    m.status,
+                    m.from_number,
+                    m.to_number,
+                    m.message_content,
+                    m.error_category or "",
+                    sanitize_error_text(m.error_message or "", placeholder_for_polluted=True),
+                    sanitize_error_text(m.ghl_sync_error or ""),
+                    getattr(ghl, "location_name", "") or "",
+                    getattr(ghl, "location_id", "") or "",
+                    m.cost,
+                    m.segments,
+                    m.sent_at.isoformat() if m.sent_at else "",
+                    m.delivered_at.isoformat() if m.delivered_at else "",
+                    m.ghl_message_id or "",
+                    m.transmit_message_id or "",
+                ])
+
+        filename = f"sms_messages_{timezone.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        response = StreamingHttpResponse(row_iter(), content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 from decimal import Decimal
@@ -1808,7 +1902,7 @@ class SendQueuedMessagesAPIView(APIView):
                                     direction="outbound",
                                 )
                                 sms.status = "failed"
-                                sms.error_message = result.get("error", "Unknown error")
+                                sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
                                 sms.save()
                                 results["failed"].append({
                                     "message_id": str(sms.id),
@@ -1826,7 +1920,7 @@ class SendQueuedMessagesAPIView(APIView):
                             })
                         except Exception as e:
                             sms.status = "failed"
-                            sms.error_message = str(e)
+                            sms.apply_failure(str(e))
                             sms.save()
                             results["failed"].append({
                                 "message_id": str(sms.id),
@@ -1932,7 +2026,8 @@ class RetrySMSMessageAPIView(APIView):
                 )
             sms.status = "queued"
             sms.error_message = None
-            sms.save(update_fields=["status", "error_message"])
+            sms.error_category = None
+            sms.save(update_fields=["status", "error_message", "error_category"])
             process_inbound_sms_task.delay(str(sms.id))
             return Response(
                 {
@@ -2003,9 +2098,10 @@ class RetrySMSMessageAPIView(APIView):
             sms.cost = cost
             sms.segments = segments
             sms.error_message = None
+            sms.error_category = None
             sms.transmit_message_id = None
             sms.save(
-                update_fields=["cost", "segments", "error_message", "transmit_message_id"]
+                update_fields=["cost", "segments", "error_message", "error_category", "transmit_message_id"]
             )
 
             result = service.send_outbound_sms(sms, cost, segments)
@@ -2033,7 +2129,7 @@ class RetrySMSMessageAPIView(APIView):
                 direction="outbound",
             )
             sms.status = "failed"
-            sms.error_message = result.get("error", "Unknown error")
+            sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
             sms.save()
             return _fail_outbound(sms.error_message or "Send failed", error_code=result.get("error_code"))
 
@@ -2061,7 +2157,8 @@ class RetrySMSMessageAPIView(APIView):
             sms.save(update_fields=["cost", "segments"])
 
         sms.error_message = None
-        sms.save(update_fields=["error_message"])
+        sms.error_category = None
+        sms.save(update_fields=["error_message", "error_category"])
 
         result = service.send_outbound_sms(sms, cost, segments)
         if result.get("success"):
@@ -2089,9 +2186,122 @@ class RetrySMSMessageAPIView(APIView):
             direction="outbound",
         )
         sms.status = "failed"
-        sms.error_message = result.get("error", "Unknown error")
+        sms.apply_failure(result.get("error", "Unknown error"), error_code=result.get("error_code"))
         sms.save()
         return _fail_outbound(sms.error_message or "Send failed", error_code=result.get("error_code"))
+
+
+class BulkRetrySMSMessagesAPIView(APIView):
+    """
+    POST /api/sms/messages/bulk-retry/
+
+    Two modes:
+      1. Explicit IDs:   body { "message_ids": ["..", ".."] }
+      2. Select-all:     body { "select_all": true }  + same query params as the
+                         message list (status, direction, location_id,
+                         error_category, search, created_at__gte/__lte).
+
+    Options (body):
+      - include_permanent (bool, default false): also retry opt-out / invalid /
+        auth / config failures (normally skipped because they can't succeed).
+      - location_id: restrict to one GHL location.
+
+    Work runs in a Celery task; the response reports how many were queued.
+    """
+    permission_classes = [AllowAny]
+    MAX_BULK = 5000
+
+    SEARCH_FIELDS = [
+        "to_number", "from_number", "message_content",
+        "ghl_account__location_name", "transmit_account__account_name",
+    ]
+
+    def post(self, request):
+        data = request.data or {}
+        include_permanent = bool(data.get("include_permanent", False))
+        location_id = data.get("location_id") or request.query_params.get("location_id")
+        select_all = bool(data.get("select_all", False))
+
+        if select_all:
+            qs = SMSMessage.objects.filter(status__in=["failed", "pending"])
+            qs = SMSMessageFilter(request.query_params, queryset=qs).qs
+
+            search = request.query_params.get("search")
+            if search:
+                search = search.strip()
+                search_q = Q()
+                for field in self.SEARCH_FIELDS:
+                    search_q |= Q(**{f"{field}__icontains": search})
+                qs = qs.filter(search_q)
+
+            if not include_permanent:
+                from sms_management_app.error_utils import PERMANENT_CATEGORIES
+                qs = qs.exclude(error_category__in=PERMANENT_CATEGORIES)
+
+            message_ids = list(qs.values_list("id", flat=True)[: self.MAX_BULK])
+        else:
+            message_ids = data.get("message_ids", [])
+            if not isinstance(message_ids, list) or not message_ids:
+                return Response(
+                    {"error": "Provide a non-empty 'message_ids' list or set 'select_all': true"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(message_ids) > self.MAX_BULK:
+                return Response(
+                    {"error": f"Too many messages. Max {self.MAX_BULK} per request."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if not message_ids:
+            return Response(
+                {"error": "No retryable messages matched."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from sms_management_app.tasks import bulk_retry_messages
+        bulk_retry_messages.delay(
+            [str(i) for i in message_ids],
+            include_permanent=include_permanent,
+            location_id=location_id,
+        )
+
+        return Response(
+            {
+                "message": f"Bulk retry queued for {len(message_ids)} message(s).",
+                "queued": len(message_ids),
+                "include_permanent": include_permanent,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class RefreshTransmitBalancesAPIView(APIView):
+    """
+    POST /api/sms/transmit-balances/refresh/
+
+    Manually fetch agency + all active Transmit subaccount balances and persist
+    client_pays + balance to the database. No Celery — admin button only.
+    """
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        from sms_management_app.transmit_balance import refresh_all_transmit_balances
+        from transmitsms.models import TransmitAgencyBalance
+
+        summary = refresh_all_transmit_balances()
+        agency = TransmitAgencyBalance.get_snapshot()
+        return Response(
+            {
+                "message": "Transmit balances refreshed",
+                "agency_balance": {
+                    "balance": agency.balance,
+                    "currency": agency.currency,
+                    "synced_at": agency.synced_at,
+                },
+                **summary,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 def test_own_number(number, price, ghl_account):
