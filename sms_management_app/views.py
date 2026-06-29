@@ -451,6 +451,7 @@ class SMSMessageExportCSVView(APIView):
         "created_at", "-created_at", "sent_at", "-sent_at",
         "delivered_at", "-delivered_at", "status", "-status",
         "direction", "-direction", "from_number", "-from_number",
+        "cost", "-cost", "segments", "-segments",
     }
     HEADER = [
         "created_at", "direction", "status", "from_number", "to_number",
@@ -858,10 +859,11 @@ class GHLAccountDashboardAPIView(APIView):
 class GHLAccountMessagesAPIView(LocationMixin, ListAPIView):
     permission_classes = [AllowAny]
     serializer_class = SMSMessageSerializer
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['status', 'direction', 'to_number', 'from_number']  # filters
-    ordering_fields = ['created_at', 'cost', 'segments']  # sorting
-    ordering = ['-created_at']  # default
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_class = SMSMessageFilter
+    search_fields = ["to_number", "from_number", "message_content"]
+    ordering_fields = ["created_at", "cost", "segments", "sent_at", "status"]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
         account, error = self.get_account(self.request)
@@ -869,18 +871,8 @@ class GHLAccountMessagesAPIView(LocationMixin, ListAPIView):
             self._error = error
             return SMSMessage.objects.none()
 
-        qs = account.smsmessage_set.all()
-
-        # Date range filter
-        start_date = self.request.query_params.get("sent_at__gte")
-        end_date = self.request.query_params.get("sent_at__lte")
-        if start_date:
-            qs = qs.filter(sent_at__gte=start_date)
-        if end_date:
-            qs = qs.filter(sent_at__lte=end_date)
-
         self._error = None
-        return qs
+        return account.smsmessage_set.all()
 
     def list(self, request, *args, **kwargs):
         if hasattr(self, "_error") and self._error:
