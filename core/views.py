@@ -133,23 +133,15 @@ def _get_main_location_credentials():
 
 
 def auth_connect(request):
-    auth_url = ("https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&"
-                f"redirect_uri={GHL_REDIRECTED_URI}&"
-                f"client_id={GHL_CLIENT_ID}&"
-                f"scope={SCOPE}"
-                )
-    return redirect(auth_url)
+    from core.ghl_auth import build_location_oauth_url
+
+    return redirect(build_location_oauth_url())
 
 
 def agency_auth_connect(request):
-    auth_url = (
-        "https://marketplace.gohighlevel.com/oauth/chooselocation?"
-        f"response_type=code&"
-        f"redirect_uri={AGENCY_REDIRECT_URI}&"
-        f"client_id={AGENCY_CLIENT_ID}&"
-        f"scope={AGENCY_SCOPE}"
-    )
-    return redirect(auth_url)
+    from core.ghl_auth import build_agency_oauth_url
+
+    return redirect(build_agency_oauth_url())
 
 
 def callback(request):

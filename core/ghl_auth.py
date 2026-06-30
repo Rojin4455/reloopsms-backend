@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlencode
 
 import requests
 from decouple import config
@@ -8,6 +9,87 @@ from core.models import AgencyToken, GHLAuthCredentials
 logger = logging.getLogger(__name__)
 
 TOKEN_REFRESH_URL = "https://services.leadconnectorhq.com/oauth/token"
+# White-label / agency installs must use leadconnectorhq.com (not gohighlevel.com).
+GHL_OAUTH_CHOOSE_LOCATION_URL = "https://marketplace.leadconnectorhq.com/oauth/chooselocation"
+
+
+def build_location_oauth_url():
+    """Build the GHL location OAuth authorize URL with properly encoded params."""
+    params = {
+        "response_type": "code",
+        "redirect_uri": config("GHL_REDIRECTED_URI"),
+        "client_id": config("GHL_CLIENT_ID"),
+        "scope": config("SCOPE"),
+        "loginWindowOpenMode": "self",
+    }
+    return f"{GHL_OAUTH_CHOOSE_LOCATION_URL}?{urlencode(params)}"
+
+
+def build_agency_oauth_url():
+    """Build the GHL agency OAuth authorize URL with properly encoded params."""
+    params = {
+        "response_type": "code",
+        "redirect_uri": config("AGENCY_REDIRECT_URI"),
+        "client_id": config("AGENCY_CLIENT_ID"),
+        "scope": config("AGENCY_SCOPE"),
+        "loginWindowOpenMode": "self",
+    }
+    return f"{GHL_OAUTH_CHOOSE_LOCATION_URL}?{urlencode(params)}"
+
+
+def exchange_location_oauth_code(authorization_code):
+    """
+    Exchange an OAuth authorization code for location tokens and upsert GHLAuthCredentials.
+
+    Returns (credentials, created) on success, or (None, error_message) on failure.
+    """
+    from core.services import get_location_name
+
+    response = requests.post(
+        TOKEN_REFRESH_URL,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": config("GHL_CLIENT_ID"),
+            "client_secret": config("GHL_CLIENT_SECRET"),
+            "redirect_uri": config("GHL_REDIRECTED_URI"),
+            "code": authorization_code,
+        },
+        timeout=60,
+    )
+
+    try:
+        response_data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        return None, f"Invalid JSON from GHL token endpoint (status={response.status_code})"
+
+    if not response.ok or not response_data.get("access_token"):
+        return None, response_data
+
+    location_id = response_data.get("locationId")
+    location_data = {}
+    try:
+        data = get_location_name(location_id=location_id, access_token=response_data.get("access_token"))
+        location_data = (data or {}).get("location") or {}
+    except Exception:
+        logger.exception("Could not fetch location details for %s during OAuth exchange", location_id)
+
+    obj, created = GHLAuthCredentials.objects.update_or_create(
+        location_id=location_id,
+        defaults={
+            "access_token": response_data.get("access_token"),
+            "refresh_token": response_data.get("refresh_token"),
+            "expires_in": response_data.get("expires_in"),
+            "scope": response_data.get("scope"),
+            "user_type": response_data.get("userType"),
+            "company_id": response_data.get("companyId"),
+            "user_id": response_data.get("userId"),
+            "location_name": location_data.get("name"),
+            "timezone": location_data.get("timezone"),
+            "business_email": location_data.get("email"),
+            "business_phone": location_data.get("phone"),
+        },
+    )
+    return (obj, created), None
 
 
 def is_ghl_auth_error(response):

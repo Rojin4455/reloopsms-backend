@@ -697,7 +697,12 @@ class GHLIntegrationService:
         
     def setup_transmit_account_for_ghl(self, ghl_account, account_details):
         """Create or link TransmitSMS account for GHL location"""
-        
+
+        # Re-OAuth for an existing location must not try to add-client again.
+        existing_mapping = GHLTransmitSMSMapping.objects.filter(ghl_account=ghl_account).first()
+        if existing_mapping:
+            return existing_mapping
+
         # First check if account already exists
         existing_account = self.transmit_service.find_existing_account(
             email=account_details.get('email'),
