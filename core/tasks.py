@@ -1,6 +1,9 @@
 import logging
 
+import requests
 from celery import shared_task
+from django.conf import settings
+
 from core.ghl_auth import refresh_agency_token, refresh_location_token
 from core.models import AgencyToken, GHLAuthCredentials
 
@@ -23,7 +26,45 @@ def make_api_call_for_agency_token():
             logger.info("Refreshed agency token for company %s", credentials.company_id)
 
 
-from django.conf import settings
+@shared_task(bind=True, max_retries=2, default_retry_delay=60)
+def notify_ghl_auth_failure_task(self, payload):
+    """POST an alert to the configured GHL workflow webhook when token refresh fails."""
+    webhook_url = getattr(settings, "GHL_AUTH_FAILURE_WEBHOOK_URL", "") or ""
+    if not webhook_url:
+        return {"status": "skipped", "reason": "no webhook url configured"}
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=30,
+        )
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            logger.warning("Retrying GHL auth failure webhook after request error: %s", exc)
+            raise self.retry(exc=exc)
+        logger.exception("GHL auth failure webhook failed after retries")
+        raise
+
+    if response.status_code >= 400:
+        logger.error(
+            "GHL auth failure webhook returned %s for location_id=%s: %s",
+            response.status_code,
+            payload.get("location_id"),
+            response.text[:500],
+        )
+        if self.request.retries < self.max_retries:
+            raise self.retry(countdown=60)
+        return {"status": "failed", "webhook_status": response.status_code}
+
+    logger.info(
+        "Sent GHL auth failure alert for location_id=%s (webhook status=%s)",
+        payload.get("location_id"),
+        response.status_code,
+    )
+    return {"status": "sent", "webhook_status": response.status_code}
+
 from core.models import Wallet
 from core.service import GHLService
 

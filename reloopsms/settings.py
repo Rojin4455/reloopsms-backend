@@ -170,6 +170,7 @@ CELERY_TASK_DEFAULT_QUEUE = "celery"
 CELERY_TASK_ROUTES = {
     "core.tasks.make_api_call": {"queue": "critical"},
     "core.tasks.make_api_call_for_agency_token": {"queue": "critical"},
+    "core.tasks.notify_ghl_auth_failure_task": {"queue": "critical"},
     "sms_management_app.tasks.send_outbound_sms_task": {"queue": "outbound"},
 }
 # Lower prefetch helps long-running tasks release the next message sooner (tune per deployment).
@@ -286,3 +287,15 @@ GHL_CF_CREDITS_REMAINING_NEW_ID = config("GHL_CF_CREDITS_REMAINING_NEW_ID", defa
 GHL_CF_SMS_RECHARGE_LOCATION_ID = config("GHL_CF_SMS_RECHARGE_LOCATION_ID", default="")
 GHL_CF_STRIPE_ID = config("GHL_CF_STRIPE_ID", default="L6rmsDZU9GYGGXyQq7IZ")
 GHL_MAIN_LOCATION_ID = config("GHL_MAIN_LOCATION_ID", default="fM52tHdamVZya3QZH3ck")
+GHL_AUTH_FAILURE_WEBHOOK_URL = config(
+    "GHL_AUTH_FAILURE_WEBHOOK_URL",
+    default=(
+        "https://services.leadconnectorhq.com/hooks/fM52tHdamVZya3QZH3ck/"
+        "webhook-trigger/91995f38-4cac-4f15-97ab-e2391eff112d"
+    ),
+)
+GHL_AUTH_FAILURE_ALERT_COOLDOWN_SECONDS = config(
+    "GHL_AUTH_FAILURE_ALERT_COOLDOWN_SECONDS",
+    default=3600,
+    cast=int,
+)

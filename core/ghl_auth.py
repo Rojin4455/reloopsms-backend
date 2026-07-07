@@ -3,6 +3,9 @@ from urllib.parse import urlencode
 
 import requests
 from decouple import config
+from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
 
 from core.models import AgencyToken, GHLAuthCredentials
 
@@ -210,6 +213,77 @@ def refresh_all_ghl_tokens():
     return location_ok, agency_ok
 
 
+def _extract_auth_error_detail(response):
+    try:
+        data = response.json()
+        return str(data.get("message") or data.get("error") or response.text)[:500]
+    except Exception:
+        return (response.text or "")[:500]
+
+
+def _build_auth_failure_payload(auth_credentials, *, method, url, response, initial_status):
+    payload = {
+        "alert_type": "ghl_token_auth_failure",
+        "reason": (
+            "GHL API returned an authentication error after inline token refresh "
+            "and one retry. The location likely needs to re-authorize the app."
+        ),
+        "http_method": method,
+        "api_url": url,
+        "initial_status_code": initial_status,
+        "final_status_code": response.status_code,
+        "error_detail": _extract_auth_error_detail(response),
+        "occurred_at": timezone.now().isoformat(),
+    }
+    if auth_credentials is not None:
+        payload.update(
+            {
+                "ghl_account_id": str(auth_credentials.pk),
+                "location_id": auth_credentials.location_id,
+                "location_name": auth_credentials.location_name,
+                "company_id": auth_credentials.company_id,
+                "business_email": auth_credentials.business_email,
+                "business_phone": auth_credentials.business_phone,
+                "contact_name": auth_credentials.contact_name,
+                "ghl_contact_email": auth_credentials.ghl_contact_email,
+            }
+        )
+    return payload
+
+
+def _queue_auth_failure_alert(auth_credentials, *, method, url, response, initial_status):
+    webhook_url = getattr(settings, "GHL_AUTH_FAILURE_WEBHOOK_URL", "") or ""
+    if not webhook_url:
+        return
+
+    dedupe_id = (
+        getattr(auth_credentials, "location_id", None)
+        or getattr(auth_credentials, "pk", None)
+        or "unknown"
+    )
+    cooldown = getattr(settings, "GHL_AUTH_FAILURE_ALERT_COOLDOWN_SECONDS", 3600)
+    dedupe_key = f"ghl_auth_alert:{dedupe_id}"
+    if not cache.add(dedupe_key, True, timeout=cooldown):
+        logger.info("Skipping duplicate GHL auth failure alert for %s", dedupe_id)
+        return
+
+    payload = _build_auth_failure_payload(
+        auth_credentials,
+        method=method,
+        url=url,
+        response=response,
+        initial_status=initial_status,
+    )
+    from core.tasks import notify_ghl_auth_failure_task
+
+    notify_ghl_auth_failure_task.delay(payload)
+    logger.warning(
+        "Queued GHL auth failure alert for location_id=%s (status=%s)",
+        payload.get("location_id"),
+        response.status_code,
+    )
+
+
 def ghl_request(method, url, *, headers=None, auth_credentials=None, retry_on_auth=True, timeout=60, **kwargs):
     """
     Make a GHL API request. On 401 / Invalid JWT, refresh all tokens and retry once.
@@ -223,11 +297,12 @@ def ghl_request(method, url, *, headers=None, auth_credentials=None, retry_on_au
     if not retry_on_auth or not is_ghl_auth_error(response):
         return response
 
+    initial_status = response.status_code
     logger.warning(
         "GHL auth error on %s %s (status=%s) — refreshing all tokens and retrying once",
         method,
         url,
-        response.status_code,
+        initial_status,
     )
     refresh_all_ghl_tokens()
 
@@ -235,4 +310,13 @@ def ghl_request(method, url, *, headers=None, auth_credentials=None, retry_on_au
         auth_credentials.refresh_from_db()
         headers["Authorization"] = f"Bearer {auth_credentials.access_token}"
 
-    return requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+    retry_response = requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+    if is_ghl_auth_error(retry_response):
+        _queue_auth_failure_alert(
+            auth_credentials,
+            method=method,
+            url=url,
+            response=retry_response,
+            initial_status=initial_status,
+        )
+    return retry_response
