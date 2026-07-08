@@ -1,5 +1,6 @@
 import requests
 import json
+import logging
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from decouple import config
@@ -41,6 +42,8 @@ from django.conf import settings
 stripe.api_key = (
     settings.STRIPE_TEST_API_KEY if settings.DEBUG else settings.STRIPE_LIVE_API_KEY
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Create your views here.
@@ -145,13 +148,28 @@ def agency_auth_connect(request):
 
 
 def callback(request):
-    
-    code = request.GET.get('code')
+    from core.ghl_auth import parse_location_ids_from_query_params
+
+    code = request.GET.get("code")
 
     if not code:
         return JsonResponse({"error": "Authorization code not received from OAuth"}, status=400)
 
-    return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?code={code}')
+    callback_params = {key: request.GET.getlist(key) for key in request.GET.keys()}
+    print(f"[GHL OAuth] callback query params: {callback_params}")
+    logger.info("[GHL OAuth] callback query params: %s", callback_params)
+
+    location_ids = parse_location_ids_from_query_params(request.GET)
+    print(f"[GHL OAuth] callback parsed location_ids: {location_ids}")
+    logger.info("[GHL OAuth] callback parsed location_ids: %s", location_ids)
+
+    query_pairs = [("code", code)]
+    if len(location_ids) == 1:
+        query_pairs.append(("locationId", location_ids[0]))
+    elif len(location_ids) > 1:
+        query_pairs.append(("locationIds", ",".join(location_ids)))
+
+    return redirect(f'{config("BASE_URI")}/api/core/auth/tokens?{urlencode(query_pairs)}')
 
 
 
@@ -179,141 +197,93 @@ from django.utils import timezone
 from sms_management_app.utils import format_password
 
 def tokens(request):
+    from core.ghl_auth import exchange_location_oauth_code, parse_location_ids_from_query_params
+
     authorization_code = request.GET.get("code")
 
     if not authorization_code:
         return JsonResponse({"error": "Authorization code not found"}, status=400)
 
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": GHL_CLIENT_ID,
-        "client_secret": GHL_CLIENT_SECRET,
-        "redirect_uri": GHL_REDIRECTED_URI,
-        "code": authorization_code,
-    }
+    token_params = {key: request.GET.getlist(key) for key in request.GET.keys()}
+    print(f"[GHL OAuth] tokens step query params: {token_params}")
+    logger.info("[GHL OAuth] tokens step query params: %s", token_params)
 
-    response = requests.post(TOKEN_URL, data=data)
+    preferred_location_ids = parse_location_ids_from_query_params(request.GET)
+    preferred_location_id = preferred_location_ids[0] if len(preferred_location_ids) == 1 else None
 
-    try:
-        response_data = response.json()
-        if not response_data:
-            return
-        print("response.data: ", response_data)
-        if not response_data.get('access_token'):
-            return render(request, 'onboard.html', context={
-                "message": "Invalid JSON response from API",
-                "status_code": response.status_code,
-                "response_text": response.text[:400]
-            }, status=400)
-        
+    result, error = exchange_location_oauth_code(
+        authorization_code,
+        preferred_location_id=preferred_location_id,
+        preferred_location_ids=preferred_location_ids,
+    )
+    if error:
+        query_params = {"warning": str(error)}
+        return redirect(f"{FRONTEND_URL}/highlevel-accounts?{urlencode(query_params)}")
 
-        data = get_location_name(location_id=response_data.get("locationId"), access_token=response_data.get('access_token'))
-        location_data = data.get("location")
-        obj, created = GHLAuthCredentials.objects.update_or_create(
-            location_id= response_data.get("locationId"),
-            defaults={
-                "access_token": response_data.get("access_token"),
-                "refresh_token": response_data.get("refresh_token"),
-                "expires_in": response_data.get("expires_in"),
-                "scope": response_data.get("scope"),
-                "user_type": response_data.get("userType"),
-                "company_id": response_data.get("companyId"),
-                "user_id":response_data.get("userId"),
-                "location_name":location_data.get("name"),
-                "timezone": location_data.get("timezone"),
-                "business_email":location_data.get("email"),
-                "business_phone":location_data.get("phone")
-            }
-        )
+    credentials = result["credentials"]
+    skipped_locations = result.get("skipped_locations") or []
+    transmit_warnings = []
+    service = GHLIntegrationService()
+
+    for obj, _created in credentials:
         password = format_password(obj.location_name)
-        print("password: ", password)
-
         account_details = {
-            'name': obj.location_name,
-            'email': obj.business_email,
-            'phone': obj.business_phone,
-            'password': password
+            "name": obj.location_name,
+            "email": obj.business_email,
+            "phone": obj.business_phone,
+            "password": password,
         }
-
-        print("changes updates")
-        
-        # # Setup TransmitSMS account
-        service = GHLIntegrationService()
         error_message = service.setup_transmit_account_for_ghl(obj, account_details)
-
-        query_params = {
-            "locationId": response_data.get("locationId"),
-        }
-
         if error_message:
-            query_params["warning"] = error_message
+            transmit_warnings.append(f"{obj.location_name or obj.location_id}: {error_message}")
 
-        frontend_url = f"{FRONTEND_URL}/highlevel-accounts?{urlencode(query_params)}"
-        
-        return redirect(frontend_url)
-        
-    except requests.exceptions.JSONDecodeError:
-        frontend_url = "http://localhost:3000/admin/error-onboard"
-        return redirect(frontend_url)
+    query_params = {}
+    if len(credentials) == 1:
+        query_params["locationId"] = credentials[0][0].location_id
+
+    messages = []
+    if len(credentials) > 1:
+        messages.append(f"Connected {len(credentials)} HighLevel accounts.")
+    if skipped_locations:
+        messages.append(
+            f"Skipped {len(skipped_locations)} inactive sub-account"
+            f"{'' if len(skipped_locations) == 1 else 's'}."
+        )
+    if transmit_warnings:
+        messages.extend(transmit_warnings)
+
+    if messages:
+        query_params["warning"] = " ".join(messages)
+
+    redirect_url = f"{FRONTEND_URL}/highlevel-accounts"
+    if query_params:
+        redirect_url = f"{redirect_url}?{urlencode(query_params)}"
+    return redirect(redirect_url)
     
 
 
 def agency_tokens(request):
+    from core.ghl_auth import exchange_agency_oauth_code
+    import logging
+
+    logger = logging.getLogger(__name__)
     authorization_code = request.GET.get("code")
 
     if not authorization_code:
         return JsonResponse({"error": "Authorization code not found"}, status=400)
 
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": AGENCY_CLIENT_ID,
-        "client_secret": AGENCY_CLIENT_SECRET,
-        "redirect_uri": AGENCY_REDIRECT_URI,
-        "code": authorization_code,
-    }
+    result, error = exchange_agency_oauth_code(authorization_code)
+    if error:
+        return JsonResponse({"error": str(error)}, status=400)
 
-    
+    obj, _created = result
+    logger.info("Agency token saved for company %s", obj.company_id)
 
-    response = requests.post(TOKEN_URL, data=data)
-
-    try:
-        response_data = response.json()
-        print("response_data",response_data)
-        if not response_data or not response_data.get("access_token"):
-            return render(request, 'onboard.html', context={
-                "message": "Invalid token response from API",
-                "status_code": response.status_code,
-                "response_text": response.text[:400],
-            }, status=400)
-
-        # Save or update agency token
-        obj, created = AgencyToken.objects.update_or_create(
-            company_id=response_data.get("companyId"),
-            defaults={
-                "access_token": response_data.get("access_token"),
-                "refresh_token": response_data.get("refresh_token"),
-                "expires_in": response_data.get("expires_in"),
-                "scope": response_data.get("scope"),
-                "user_type": response_data.get("userType"),
-                "user_id": response_data.get("userId"),
-                "is_bulk_installation": response_data.get("isBulkInstallation", False),
-                "token_type": response_data.get("token_type", "Bearer"),
-                "refresh_token_id": response_data.get("refreshTokenId"),
-            }
-        )
-
-        print(f"✅ Agency token saved for company {obj.company_id}")
-
-        # Redirect to frontend success page
-        query_params = urlencode({
-            "companyId": obj.company_id,
-            "userId": obj.user_id
-        })
-        frontend_url = f"{FRONTEND_URL}/agency-accounts?{query_params}"
-        return redirect(frontend_url)
-
-    except requests.exceptions.JSONDecodeError:
-        return redirect(f"{FRONTEND_URL}/admin/error-onboard")
+    query_params = urlencode({
+        "companyId": obj.company_id,
+        "userId": obj.user_id,
+    })
+    return redirect(f"{FRONTEND_URL}/agency-accounts?{query_params}")
 
 
 @method_decorator(csrf_exempt, name='dispatch')

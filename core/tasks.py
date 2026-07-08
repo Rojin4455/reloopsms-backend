@@ -4,8 +4,8 @@ import requests
 from celery import shared_task
 from django.conf import settings
 
-from core.ghl_auth import refresh_agency_token, refresh_location_token
-from core.models import AgencyToken, GHLAuthCredentials
+from core.ghl_auth import refresh_agency_token, refresh_company_token, refresh_location_token
+from core.models import AgencyToken, CompanyToken, GHLAuthCredentials
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,14 @@ def make_api_call():
     for credentials in GHLAuthCredentials.objects.all():
         if refresh_location_token(credentials):
             logger.info("Refreshed location token for %s", credentials.location_id)
+
+
+@shared_task(soft_time_limit=600, time_limit=660)
+def make_api_call_for_company_token():
+    """Refresh OAuth tokens for all company rows (location app GHL OAuth)."""
+    for credentials in CompanyToken.objects.all():
+        if refresh_company_token(credentials):
+            logger.info("Refreshed company token for company %s", credentials.company_id)
 
 
 @shared_task(soft_time_limit=600, time_limit=660)

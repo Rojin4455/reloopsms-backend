@@ -13,7 +13,7 @@ class AgencyToken(models.Model):
     token_type = models.CharField(max_length=50, default='Bearer')
     expires_in = models.PositiveIntegerField(default=86399)
     refresh_token = models.TextField()
-    scope = models.CharField(max_length=255, blank=True, null=True)
+    scope = models.TextField(blank=True, null=True)
     refresh_token_id = models.CharField(max_length=128, blank=True, null=True)
     user_type = models.CharField(max_length=50, default='Company')
     company_id = models.CharField(max_length=128, db_index=True)
@@ -24,13 +24,34 @@ class AgencyToken(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class CompanyToken(models.Model):
+    """GHL company/agency OAuth token from the location app (Add HighLevel Account) flow."""
+
+    access_token = models.TextField()
+    token_type = models.CharField(max_length=50, default="Bearer")
+    expires_in = models.PositiveIntegerField(default=86399)
+    refresh_token = models.TextField()
+    scope = models.TextField(blank=True, null=True)
+    refresh_token_id = models.CharField(max_length=128, blank=True, null=True)
+    user_type = models.CharField(max_length=50, default="Company")
+    company_id = models.CharField(max_length=128, unique=True, db_index=True)
+    is_bulk_installation = models.BooleanField(default=False)
+    user_id = models.CharField(max_length=128, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"CompanyToken {self.company_id}"
+
+
 class GHLAuthCredentials(models.Model):
     user_id = models.CharField(max_length=255)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     access_token = models.TextField()
     refresh_token = models.TextField()
     expires_in = models.IntegerField()
-    scope = models.CharField(max_length=500, null=True, blank=True)
+    scope = models.TextField(null=True, blank=True)
     user_type = models.CharField(max_length=50, null=True, blank=True)
     company_id = models.CharField(max_length=255, null=True, blank=True)
     location_name = models.CharField(max_length=255, null=True, blank=True)

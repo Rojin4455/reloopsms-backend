@@ -10,7 +10,7 @@ Use for deploy hooks, emergency token refresh, or cron outside Celery:
 
 from django.core.management.base import BaseCommand
 
-from core.tasks import make_api_call, make_api_call_for_agency_token
+from core.tasks import make_api_call, make_api_call_for_agency_token, make_api_call_for_company_token
 
 
 class Command(BaseCommand):
@@ -23,6 +23,11 @@ class Command(BaseCommand):
             help="Only refresh AgencyToken rows",
         )
         parser.add_argument(
+            "--company-only",
+            action="store_true",
+            help="Only refresh CompanyToken rows (location app GHL OAuth)",
+        )
+        parser.add_argument(
             "--locations-only",
             action="store_true",
             help="Only refresh GHLAuthCredentials (location) rows",
@@ -30,18 +35,31 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         agency_only = options["agency_only"]
+        company_only = options["company_only"]
         locations_only = options["locations_only"]
 
-        if agency_only and locations_only:
-            self.stderr.write(self.style.ERROR("Use at most one of --agency-only / --locations-only"))
+        if sum([agency_only, company_only, locations_only]) > 1:
+            self.stderr.write(
+                self.style.ERROR("Use at most one of --agency-only / --company-only / --locations-only")
+            )
             return
 
-        if not agency_only:
+        only_one = agency_only or company_only or locations_only
+        refresh_locations = locations_only or not only_one
+        refresh_company = company_only or not only_one
+        refresh_agency = agency_only or not only_one
+
+        if refresh_locations:
             self.stdout.write("Refreshing location tokens (GHLAuthCredentials)...")
             make_api_call.apply()
             self.stdout.write(self.style.SUCCESS("Location token refresh finished."))
 
-        if not locations_only:
+        if refresh_company:
+            self.stdout.write("Refreshing company tokens (CompanyToken)...")
+            make_api_call_for_company_token.apply()
+            self.stdout.write(self.style.SUCCESS("Company token refresh finished."))
+
+        if refresh_agency:
             self.stdout.write("Refreshing agency tokens (AgencyToken)...")
             make_api_call_for_agency_token.apply()
             self.stdout.write(self.style.SUCCESS("Agency token refresh finished."))

@@ -170,6 +170,7 @@ CELERY_TASK_DEFAULT_QUEUE = "celery"
 CELERY_TASK_ROUTES = {
     "core.tasks.make_api_call": {"queue": "critical"},
     "core.tasks.make_api_call_for_agency_token": {"queue": "critical"},
+    "core.tasks.make_api_call_for_company_token": {"queue": "critical"},
     "core.tasks.notify_ghl_auth_failure_task": {"queue": "critical"},
     "sms_management_app.tasks.send_outbound_sms_task": {"queue": "outbound"},
 }
@@ -194,6 +195,11 @@ CELERY_BEAT_SCHEDULE = {
     "make-api-call-for-agency-every-6-hours": {
         "task": "core.tasks.make_api_call_for_agency_token",
         "schedule": crontab(minute=15, hour="*/10"),
+        "options": {"queue": "critical"},
+    },
+    "make-api-call-for-company-every-6-hours": {
+        "task": "core.tasks.make_api_call_for_company_token",
+        "schedule": crontab(minute=20, hour="*/10"),
         "options": {"queue": "critical"},
     },
     "sync-contact-wallet-custom-fields-every-10-hours": {

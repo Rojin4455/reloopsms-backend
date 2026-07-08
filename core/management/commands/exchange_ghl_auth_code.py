@@ -43,10 +43,11 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"Token exchange failed: {error}"))
             return
 
-        obj, created = result
-        action = "Created" if created else "Updated"
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"{action} tokens for {obj.location_name} ({obj.location_id})"
+        credentials = result["credentials"]
+        for obj, created in credentials:
+            action = "Created" if created else "Updated"
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"{action} tokens for {obj.location_name} ({obj.location_id})"
+                )
             )
-        )
