@@ -392,6 +392,105 @@ def _upsert_location_credentials(location_token_data: dict):
     )
 
 
+def _connect_locations_from_records(
+    company_access_token: str,
+    company_id: str,
+    location_records: list[dict],
+) -> tuple[list[tuple[GHLAuthCredentials, bool]], list[dict]]:
+    """Mint locationToken + upsert GHLAuthCredentials for each installed location record."""
+    connected: list[tuple[GHLAuthCredentials, bool]] = []
+    skipped_locations: list[dict] = []
+
+    for record in location_records:
+        loc_id = _location_id_from_record(record)
+        if not loc_id:
+            continue
+        try:
+            loc_token = _try_mint_location_token(company_access_token, company_id, loc_id)
+        except ValueError as exc:
+            skipped_locations.append(
+                {
+                    "location_id": loc_id,
+                    "name": record.get("name"),
+                    "reason": str(exc),
+                }
+            )
+            continue
+        if not loc_token:
+            skipped_locations.append(
+                {
+                    "location_id": loc_id,
+                    "name": record.get("name"),
+                    "reason": "inactive",
+                }
+            )
+            continue
+        obj, created = _upsert_location_credentials(loc_token)
+        connected.append((obj, created))
+
+    return connected, skipped_locations
+
+
+def remint_installed_location_tokens_for_company(
+    company_id: str,
+    *,
+    refresh_company_token_first: bool = True,
+) -> dict:
+    """
+    Re-mint v2 location tokens for every GHL-installed sub-account under a company.
+
+    Uses the stored CompanyToken to call installedLocations + locationToken, then
+    upserts GHLAuthCredentials. Intended for v1 -> v2 token upgrades without a
+    full browser OAuth round-trip.
+    """
+    try:
+        company_token = CompanyToken.objects.get(company_id=company_id)
+    except CompanyToken.DoesNotExist:
+        raise ValueError(f"No CompanyToken found for company_id={company_id}")
+
+    company_access_token = company_token.access_token
+    if refresh_company_token_first:
+        refreshed = _refresh_company_token_with_client(
+            company_token.refresh_token,
+            client_id=config("GHL_CLIENT_ID"),
+            client_secret=config("GHL_CLIENT_SECRET"),
+            redirect_uri=config("GHL_REDIRECTED_URI"),
+        )
+        if not refreshed:
+            raise ValueError(f"Company token refresh failed for company_id={company_id}")
+        CompanyToken.objects.update_or_create(
+            company_id=company_id,
+            defaults={
+                "access_token": refreshed.get("access_token"),
+                "refresh_token": refreshed.get("refresh_token"),
+                "expires_in": refreshed.get("expires_in"),
+                "scope": refreshed.get("scope"),
+                "user_type": _clip(refreshed.get("userType"), 50),
+                "user_id": _clip(refreshed.get("userId"), 128),
+                "is_bulk_installation": refreshed.get("isBulkInstallation", False),
+                "token_type": _clip(refreshed.get("token_type", "Bearer"), 50),
+                "refresh_token_id": _clip(refreshed.get("refreshTokenId"), 128),
+            },
+        )
+        company_access_token = refreshed["access_token"]
+
+    installed = _list_installed_locations(company_access_token, company_id)
+    connected, skipped = _connect_locations_from_records(
+        company_access_token,
+        company_id,
+        installed,
+    )
+    return {
+        "company_id": company_id,
+        "installed_count": len(installed),
+        "connected_count": len(connected),
+        "created_count": sum(1 for _, created in connected if created),
+        "updated_count": sum(1 for _, created in connected if not created),
+        "connected_location_ids": [obj.location_id for obj, _ in connected],
+        "skipped_locations": skipped,
+    }
+
+
 def _connect_company_install(
     response_data: dict,
     preferred_location_ids: list[str] | None = None,
@@ -427,57 +526,36 @@ def _connect_company_install(
                 "location_id", flat=True
             )
         )
-        new_locations = [
-            loc
+        new_location_ids = [
+            _location_id_from_record(loc)
             for loc in installed
             if _location_id_from_record(loc) not in existing_ids
         ]
-        if new_locations:
-            location_records = new_locations
-            _debug_ghl_oauth(
-                "company install using locations not yet in DB",
-                {
-                    "new_location_ids": [_location_id_from_record(loc) for loc in new_locations],
-                    "existing_count": len(existing_ids),
-                },
-            )
-        else:
-            location_records = installed
-            _debug_ghl_oauth(
-                "company install using all installed locations",
-                {
-                    "installed_count": len(installed),
-                    "reason": "no callback location ids and no new locations vs DB",
-                },
-            )
+        # Re-auth must refresh tokens for every installed sub-account (v1 -> v2),
+        # not only rows missing from our DB.
+        location_records = installed
+        _debug_ghl_oauth(
+            "company install using all installed locations",
+            {
+                "installed_count": len(installed),
+                "existing_count": len(existing_ids),
+                "new_location_ids": new_location_ids,
+            },
+        )
     if not location_records:
         return None, (
             "No installed locations found. In GHL, select at least one sub-account "
             "when installing the app, then try again."
         )
 
-    connected: list[tuple[GHLAuthCredentials, bool]] = []
-    skipped_locations: list[dict] = []
-
-    for record in location_records:
-        loc_id = _location_id_from_record(record)
-        if not loc_id:
-            continue
-        try:
-            loc_token = _try_mint_location_token(company_access_token, company_id, loc_id)
-        except ValueError as exc:
-            return None, str(exc)
-        if not loc_token:
-            skipped_locations.append(
-                {
-                    "location_id": loc_id,
-                    "name": record.get("name"),
-                    "reason": "inactive",
-                }
-            )
-            continue
-        obj, created = _upsert_location_credentials(loc_token)
-        connected.append((obj, created))
+    try:
+        connected, skipped_locations = _connect_locations_from_records(
+            company_access_token,
+            company_id,
+            location_records,
+        )
+    except Exception as exc:
+        return None, str(exc)
 
     if not connected:
         if skipped_locations:
@@ -691,17 +769,22 @@ def _refresh_company_token_with_client(
 
 
 def _remint_location_tokens_for_company(company_access_token: str, company_id: str) -> None:
-    for credentials in GHLAuthCredentials.objects.filter(company_id=company_id):
-        if not credentials.location_id:
-            continue
-        minted = _try_mint_location_token(
+    """Re-mint location tokens for every installed sub-account under this company."""
+    try:
+        installed = _list_installed_locations(company_access_token, company_id)
+        connected, skipped = _connect_locations_from_records(
             company_access_token,
             company_id,
-            credentials.location_id,
+            installed,
         )
-        if not minted:
-            continue
-        _upsert_location_credentials(minted)
+        logger.info(
+            "Re-minted location tokens for company %s: connected=%s skipped=%s",
+            company_id,
+            len(connected),
+            len(skipped),
+        )
+    except Exception:
+        logger.exception("Failed re-minting location tokens for company %s", company_id)
 
 
 def refresh_company_token(credentials):
@@ -798,7 +881,12 @@ def refresh_agency_token(credentials):
 
 def refresh_all_ghl_tokens():
     """Refresh every stored location, company, and agency OAuth token."""
-    location_ok = sum(refresh_location_token(creds) for creds in GHLAuthCredentials.objects.all())
+    company_ids_with_token = set(CompanyToken.objects.values_list("company_id", flat=True))
+    location_ok = 0
+    for creds in GHLAuthCredentials.objects.all():
+        if creds.company_id and creds.company_id in company_ids_with_token:
+            continue
+        location_ok += refresh_location_token(creds)
     company_ok = sum(refresh_company_token(creds) for creds in CompanyToken.objects.all())
     agency_ok = sum(refresh_agency_token(creds) for creds in AgencyToken.objects.all())
     logger.info(

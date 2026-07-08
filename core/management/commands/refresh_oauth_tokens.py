@@ -51,15 +51,15 @@ class Command(BaseCommand):
 
         if refresh_locations:
             self.stdout.write("Refreshing location tokens (GHLAuthCredentials)...")
-            make_api_call.apply()
-            self.stdout.write(self.style.SUCCESS("Location token refresh finished."))
+            summary = make_api_call.apply().get()
+            self.stdout.write(self.style.SUCCESS(f"Location token refresh finished: {summary}"))
 
         if refresh_company:
             self.stdout.write("Refreshing company tokens (CompanyToken)...")
-            make_api_call_for_company_token.apply()
-            self.stdout.write(self.style.SUCCESS("Company token refresh finished."))
+            summary = make_api_call_for_company_token.apply().get()
+            self.stdout.write(self.style.SUCCESS(f"Company token refresh finished: {summary}"))
 
         if refresh_agency:
             self.stdout.write("Refreshing agency tokens (AgencyToken)...")
-            make_api_call_for_agency_token.apply()
-            self.stdout.write(self.style.SUCCESS("Agency token refresh finished."))
+            summary = make_api_call_for_agency_token.apply().get()
+            self.stdout.write(self.style.SUCCESS(f"Agency token refresh finished: {summary}"))

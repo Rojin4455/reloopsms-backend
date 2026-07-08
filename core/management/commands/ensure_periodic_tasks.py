@@ -24,6 +24,7 @@ from django_celery_beat.models import PeriodicTask
 TASK_MAX_AGE = {
     "make-api-call-every-6-hours": timedelta(hours=11),
     "make-api-call-for-agency-every-6-hours": timedelta(hours=11),
+    "make-api-call-for-company-every-6-hours": timedelta(hours=11),
     "sync-contact-wallet-custom-fields-every-10-hours": timedelta(hours=11),
     "make-api-call-for-sync_numbers": timedelta(hours=25),
     "sync-client-owned-numbers": timedelta(hours=25),

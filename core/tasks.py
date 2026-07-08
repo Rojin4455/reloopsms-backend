@@ -12,26 +12,57 @@ logger = logging.getLogger(__name__)
 
 @shared_task(soft_time_limit=600, time_limit=660)
 def make_api_call():
-    """Refresh OAuth tokens for all GHL location credentials (one row at a time, errors isolated)."""
+    """
+    Refresh OAuth tokens for standalone GHL location credentials.
+
+    Rows tied to a CompanyToken are skipped here — the company refresh task
+    re-mints those location tokens via locationToken (v2 scopes).
+    """
+    company_ids_with_token = set(CompanyToken.objects.values_list("company_id", flat=True))
+    total = 0
+    ok = 0
+    skipped = 0
     for credentials in GHLAuthCredentials.objects.all():
+        if credentials.company_id and credentials.company_id in company_ids_with_token:
+            skipped += 1
+            continue
+        total += 1
         if refresh_location_token(credentials):
+            ok += 1
             logger.info("Refreshed location token for %s", credentials.location_id)
+    summary = {"total": total, "ok": ok, "failed": total - ok, "skipped_company_managed": skipped}
+    logger.info("Location token refresh complete: %s", summary)
+    return summary
 
 
 @shared_task(soft_time_limit=600, time_limit=660)
 def make_api_call_for_company_token():
     """Refresh OAuth tokens for all company rows (location app GHL OAuth)."""
+    total = 0
+    ok = 0
     for credentials in CompanyToken.objects.all():
+        total += 1
         if refresh_company_token(credentials):
+            ok += 1
             logger.info("Refreshed company token for company %s", credentials.company_id)
+    summary = {"total": total, "ok": ok, "failed": total - ok}
+    logger.info("Company token refresh complete: %s", summary)
+    return summary
 
 
 @shared_task(soft_time_limit=600, time_limit=660)
 def make_api_call_for_agency_token():
     """Refresh OAuth tokens for all agency rows (errors isolated per row)."""
+    total = 0
+    ok = 0
     for credentials in AgencyToken.objects.all():
+        total += 1
         if refresh_agency_token(credentials):
+            ok += 1
             logger.info("Refreshed agency token for company %s", credentials.company_id)
+    summary = {"total": total, "ok": ok, "failed": total - ok}
+    logger.info("Agency token refresh complete: %s", summary)
+    return summary
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=60)
