@@ -518,20 +518,48 @@ class SMSMessageExportCSVView(APIView):
 from decimal import Decimal
 
 
+# GHL form recharge options charge credit + card fee; map received total → wallet credit.
+FORM_RECHARGE_AMOUNT_MAP = {
+    Decimal("31.00"): Decimal("30.00"),
+    Decimal("51.00"): Decimal("50.00"),
+    Decimal("101.90"): Decimal("100.00"),
+    Decimal("203.80"): Decimal("200.00"),
+    Decimal("509.50"): Decimal("500.00"),
+    Decimal("1019.00"): Decimal("1000.00"),
+}
+
+
+def _map_form_recharge_amount(amount):
+    """
+    When source is form, strip card fee from payment.total_amount.
+    Returns (credit_amount, None) or (None, error_message).
+    """
+    normalized = Decimal(str(amount)).quantize(Decimal("0.01"))
+    credit = FORM_RECHARGE_AMOUNT_MAP.get(normalized)
+    if credit is None:
+        return None, f"Unknown form recharge amount: {normalized}"
+    return credit, None
+
+
 def _extract_wallet_adjust_params(data):
     """
     Normalize wallet adjust payload from multiple webhook shapes:
-    - Standard: {"action", "amount", "reference_id"} at top level
+    - Standard: {"action", "amount", "reference_id", "source"} at top level
     - GHL workflow: same fields under "customData" / "custom_data"
     - Payment: {"payment": {"transaction_id", "total_amount"}}
     Top-level keys take precedence; customData fills in any missing values.
+    source == "form" means manual GHL form recharge (amount includes card fee).
     """
     if "payment" in data:
         payment_data = data["payment"] or {}
+        custom = data.get("customData") or data.get("custom_data") or {}
+        if not isinstance(custom, dict):
+            custom = {}
         return {
             "action": "add",
             "amount": Decimal(str(payment_data.get("total_amount", 0))),
             "reference_id": payment_data.get("transaction_id"),
+            "source": data.get("source") or custom.get("source"),
         }
 
     custom = data.get("customData") or data.get("custom_data") or {}
@@ -541,11 +569,13 @@ def _extract_wallet_adjust_params(data):
     action = data.get("action") or custom.get("action")
     amount_raw = data.get("amount", custom.get("amount"))
     reference_id = data.get("reference_id") or custom.get("reference_id")
+    source = data.get("source") or custom.get("source")
 
     return {
         "action": action,
         "amount": Decimal(str(amount_raw or 0)),
         "reference_id": reference_id,
+        "source": source,
     }
 
 
@@ -559,7 +589,8 @@ def wallet_adjust_funds(request, location_id):
       {
         "action": "gift" | "take" | "add",
         "amount": 50.00,
-        "reference_id": "txn_123"
+        "reference_id": "txn_123",
+        "source": "form"  # optional; when "form", amount is fee-inclusive and mapped to credit
       }
     """
     try:
@@ -569,12 +600,23 @@ def wallet_adjust_funds(request, location_id):
         action = params["action"]
         amount = params["amount"]
         reference_id = params["reference_id"]
+        source = params.get("source")
 
         if not action or action not in ["gift", "take", "add"]:
             return JsonResponse({"error": "Invalid or missing action"}, status=400)
 
         if amount <= 0:
             return JsonResponse({"error": "Invalid amount"}, status=400)
+
+        # Manual form recharge: payment total includes card fee → credit wallet only.
+        if source == "form" and action == "add":
+            credit_amount, map_error = _map_form_recharge_amount(amount)
+            if map_error:
+                return JsonResponse({"error": map_error}, status=400)
+            print(
+                f"Form recharge mapped amount {amount} → credit {credit_amount}"
+            )
+            amount = credit_amount
 
         # ✅ Get wallet
         try:
