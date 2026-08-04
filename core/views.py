@@ -723,9 +723,10 @@ def create_deduction(request):
 
     Flow:
       1. Resolve GHLAuthCredentials by location_id
-      2. Use account.ghl_contact_email → Stripe customer + saved card
-      3. Charge full payment total on Stripe
-      4. Credit wallet with SMS credit only (card fee stripped)
+      2. If wallet balance > $5, skip (no Stripe charge / no credit)
+      3. Use account.ghl_contact_email → Stripe customer + saved card
+      4. Charge full payment total on Stripe
+      5. Credit wallet with SMS credit only (card fee stripped)
     """
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
@@ -750,6 +751,18 @@ def create_deduction(request):
                 {"error": f"GHL account not found for location_id={location_id}"},
                 status=404,
             )
+
+        wallet, _ = Wallet.objects.get_or_create(account=account)
+        # Skip Stripe charge when wallet already has more than $5.
+        if wallet.balance > Decimal("5.00"):
+            return JsonResponse({
+                "success": True,
+                "skipped": True,
+                "message": "Wallet already has sufficient balance; no Stripe charge performed.",
+                "wallet_balance": float(wallet.balance),
+                "minimum_balance_to_skip": 5.00,
+                "location_id": location_id,
+            })
 
         contact_email = (account.ghl_contact_email or "").strip()
         if not contact_email:
@@ -808,12 +821,12 @@ def create_deduction(request):
             },
         )
 
-        wallet, _ = Wallet.objects.get_or_create(account=account)
         wallet.add_funds(credit_amount, reference_id=payment_intent.id)
         wallet.refresh_from_db()
 
         return JsonResponse({
             "success": True,
+            "skipped": False,
             "message": "Payment completed and wallet credited successfully.",
             "payment_intent_id": payment_intent.id,
             "status": payment_intent.status,
