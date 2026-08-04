@@ -170,6 +170,39 @@ def _parse_recharge_charge_and_credit(recharge_text: str):
     return charge_amount, credit_amount, None
 
 
+def _extract_create_deduction_params(data):
+    """
+    Normalize create-deduction payload from GHL shapes:
+    - Top-level: {"SMS Recharge LocationID", "SMS Credit Recharge"}
+    - Workflow: same fields under "customData" / "custom_data"
+    Top-level keys take precedence; customData fills missing values.
+    """
+    if not isinstance(data, dict):
+        return {"location_id": "", "recharge_text": ""}
+
+    custom = data.get("customData") or data.get("custom_data") or {}
+    if not isinstance(custom, dict):
+        custom = {}
+
+    location_id = (
+        data.get("SMS Recharge LocationID")
+        or custom.get("SMS Recharge LocationID")
+        or ""
+    )
+    recharge_text = (
+        data.get("SMS Credit Recharge")
+        if data.get("SMS Credit Recharge") is not None
+        else custom.get("SMS Credit Recharge")
+    )
+    if recharge_text is None:
+        recharge_text = ""
+
+    return {
+        "location_id": str(location_id).strip(),
+        "recharge_text": recharge_text,
+    }
+
+
 def _get_main_location_credentials():
     main_location_id = settings.GHL_MAIN_LOCATION_ID
     try:
@@ -715,10 +748,17 @@ def create_deduction(request):
     """
     Charge the HighLevel account's Stripe card (via ghl_contact_email), then credit wallet.
 
-    Expected JSON (GHL form / workflow):
+    Expected JSON (GHL form / workflow) — top-level or under customData:
       {
         "SMS Recharge LocationID": "<location_id>",
         "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee"
+      }
+      or
+      {
+        "customData": {
+          "SMS Recharge LocationID": "<location_id>",
+          "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee"
+        }
       }
 
     Flow:
@@ -733,9 +773,11 @@ def create_deduction(request):
 
     try:
         data = json.loads(request.body)
+        print("data:----- ", data)
 
-        location_id = (data.get("SMS Recharge LocationID") or "").strip()
-        recharge_text = data.get("SMS Credit Recharge", "")
+        params = _extract_create_deduction_params(data)
+        location_id = params["location_id"]
+        recharge_text = params["recharge_text"]
 
         if not location_id:
             return JsonResponse({"error": "SMS Recharge LocationID is required"}, status=400)
