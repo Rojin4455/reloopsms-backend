@@ -1,12 +1,13 @@
 import requests
 import json
 import logging
+import re
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from decouple import config
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import csrf_exempt
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from django_filters.rest_framework import DjangoFilterBackend
@@ -23,20 +24,18 @@ from rest_framework import generics
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
+from django.utils.timezone import now
+from django.conf import settings
+
+import stripe
 
 from core.models import GHLAuthCredentials
 from core.services import get_location_name
 from core.service import GHLService
 from .serializers import UserSerializer, RegisterSerializer
-from .models import GHLAuthCredentials, Wallet, WalletTransaction
+from .models import GHLAuthCredentials, Wallet, WalletTransaction, StripeCustomerData
 from .serializers import GHLAuthCredentialsSerializer, WalletSerializer, WalletTransactionSerializer, WalletListingSerializer, WalletTransactionListingSerializer
 from .filters import WalletFilter, WalletTransactionFilter
-
-import stripe
-from urllib.parse import quote
-from django.utils.timezone import now
-from .models import StripeCustomerData
-from django.conf import settings
 
 
 stripe.api_key = (
@@ -122,6 +121,53 @@ def _lookup_latest_stripe_customer_id(email: str):
         return None
     latest_customer = sorted(customers.data, key=lambda c: c.created, reverse=True)[0]
     return latest_customer.id
+
+
+def _lookup_stripe_card_payment_method_id(customer_id: str):
+    """Return the first saved card PaymentMethod id for a Stripe customer, if any."""
+    try:
+        payment_methods = stripe.PaymentMethod.list(
+            customer=customer_id,
+            type="card",
+            limit=1,
+        )
+        if payment_methods.data:
+            return payment_methods.data[0].id
+    except Exception as e:
+        logger.warning("Failed to list Stripe payment methods for %s: %s", customer_id, e)
+    return None
+
+
+# GHL form recharge options: payment total (credit + card fee) → wallet credit only.
+STRIPE_RECHARGE_AMOUNT_MAP = {
+    Decimal("31.00"): Decimal("30.00"),
+    Decimal("51.00"): Decimal("50.00"),
+    Decimal("101.90"): Decimal("100.00"),
+    Decimal("203.80"): Decimal("200.00"),
+    Decimal("509.50"): Decimal("500.00"),
+    Decimal("1019.00"): Decimal("1000.00"),
+}
+
+
+def _parse_recharge_charge_and_credit(recharge_text: str):
+    """
+    Parse GHL "SMS Credit Recharge" text like "$30.00 Credit + $1 Card Fee".
+    Returns (charge_amount, credit_amount, error_message).
+    Stripe is charged the full total; wallet gets credit only (fee stripped via map).
+    """
+    amounts = re.findall(r"\$([\d\.]+)", recharge_text or "")
+    if not amounts:
+        return None, None, "Could not parse dollar amounts from SMS Credit Recharge"
+
+    charge_amount = sum(Decimal(a) for a in amounts).quantize(Decimal("0.01"))
+    credit_amount = STRIPE_RECHARGE_AMOUNT_MAP.get(charge_amount)
+    if credit_amount is None:
+        # Fallback: first $ is credit, total is charge (e.g. "$30.00 Credit + $1 Card Fee")
+        credit_amount = Decimal(amounts[0]).quantize(Decimal("0.01"))
+        if credit_amount <= 0 or charge_amount < credit_amount:
+            return None, None, f"Unknown or invalid recharge amount: {charge_amount}"
+
+    return charge_amount, credit_amount, None
 
 
 def _get_main_location_credentials():
@@ -664,93 +710,130 @@ def stripe_customer_lookup(request):
     
 
 
-import re
-
 @csrf_exempt
 def create_deduction(request):
+    """
+    Charge the HighLevel account's Stripe card (via ghl_contact_email), then credit wallet.
+
+    Expected JSON (GHL form / workflow):
+      {
+        "SMS Recharge LocationID": "<location_id>",
+        "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee"
+      }
+
+    Flow:
+      1. Resolve GHLAuthCredentials by location_id
+      2. Use account.ghl_contact_email → Stripe customer + saved card
+      3. Charge full payment total on Stripe
+      4. Credit wallet with SMS credit only (card fee stripped)
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
 
     try:
-        # data = json.loads(request.body)
-        # location_id = data.get("location_id")
-        # amount = data.get("amount")  # Amount in cents
-        # currency = data.get("currency", "usd")  # default to USD
-
         data = json.loads(request.body)
 
-        # Extract location_id
-        location_id = data.get("SMS Recharge LocationID")
-
-        # Extract the credit amount string
+        location_id = (data.get("SMS Recharge LocationID") or "").strip()
         recharge_text = data.get("SMS Credit Recharge", "")
 
-        # Find all dollar amounts (like $30.00 and $1)
-        amounts = re.findall(r"\$([\d\.]+)", recharge_text)
+        if not location_id:
+            return JsonResponse({"error": "SMS Recharge LocationID is required"}, status=400)
 
-        # Convert and sum them up (30.00 + 1.00 = 31.00)
-        amount = sum(float(a) for a in amounts) if amounts else 0.0
-
-        # Default currency
-        currency = "usd"
-
-        if not location_id or not amount:
-            return JsonResponse({"error": "location_id and amount are required"}, status=400)
-
-        # 1️⃣ Lookup StripeCustomer by location_id
-        customer = StripeCustomerData.objects.filter(location_id=location_id).first()
-        if not customer:
-            return JsonResponse({"error": "Customer not found for this location_id"}, status=404)
-
-        if not customer.payment_method_id:
-            return JsonResponse({"error": "Customer has no saved payment method"}, status=400)
-
-        # 2️⃣ Create PaymentIntent (charge saved card)
-        payment_intent = stripe.PaymentIntent.create(
-            amount=int(float(amount) * 100),
-            currency=currency,
-            customer=customer.customer_id,
-            payment_method=customer.payment_method_id,
-            off_session=True,
-            confirm=True,
-        )
-
-        amount = Decimal(str(amount))
-        reference_id = payment_intent.id
-
-        if amount <= 0:
-            return JsonResponse({"error": "Invalid amount"}, status=400)
+        charge_amount, credit_amount, parse_error = _parse_recharge_charge_and_credit(recharge_text)
+        if parse_error:
+            return JsonResponse({"error": parse_error}, status=400)
 
         try:
             account = GHLAuthCredentials.objects.get(location_id=location_id)
         except GHLAuthCredentials.DoesNotExist:
-            return JsonResponse({"error": "GHL account not found"}, status=404)
+            return JsonResponse(
+                {"error": f"GHL account not found for location_id={location_id}"},
+                status=404,
+            )
+
+        contact_email = (account.ghl_contact_email or "").strip()
+        if not contact_email:
+            return JsonResponse(
+                {
+                    "error": (
+                        "GHL Contact Email is not set for this HighLevel account. "
+                        "Set it in Edit HighLevel Account so Stripe can be looked up."
+                    )
+                },
+                status=400,
+            )
+
+        stripe_customer_id = _lookup_latest_stripe_customer_id(contact_email)
+        if not stripe_customer_id:
+            return JsonResponse(
+                {"error": f"No Stripe customer found for email={contact_email}"},
+                status=404,
+            )
+
+        payment_method_id = _lookup_stripe_card_payment_method_id(stripe_customer_id)
+        if not payment_method_id:
+            return JsonResponse(
+                {
+                    "error": (
+                        f"Stripe customer {stripe_customer_id} has no saved card "
+                        f"payment method for email={contact_email}"
+                    )
+                },
+                status=400,
+            )
+
+        # Cache mapping for debugging / optional reuse (does not gate the charge).
+        StripeCustomerData.objects.update_or_create(
+            email=contact_email,
+            defaults={
+                "customer_id": stripe_customer_id,
+                "payment_method_id": payment_method_id,
+                "location_id": location_id,
+            },
+        )
+
+        # Charge saved card for full total (credit + fee).
+        payment_intent = stripe.PaymentIntent.create(
+            amount=int(charge_amount * 100),
+            currency="usd",
+            customer=stripe_customer_id,
+            payment_method=payment_method_id,
+            off_session=True,
+            confirm=True,
+            metadata={
+                "location_id": location_id,
+                "ghl_contact_email": contact_email,
+                "credit_amount": str(credit_amount),
+                "charge_amount": str(charge_amount),
+            },
+        )
 
         wallet, _ = Wallet.objects.get_or_create(account=account)
+        wallet.add_funds(credit_amount, reference_id=payment_intent.id)
+        wallet.refresh_from_db()
 
-
-        new_balance = wallet.add_funds(amount,reference_id=reference_id)
-
-        # 3️⃣ Return result
         return JsonResponse({
             "success": True,
-            "message": "Payment completed successfully.",
+            "message": "Payment completed and wallet credited successfully.",
             "payment_intent_id": payment_intent.id,
             "status": payment_intent.status,
-            "amount": payment_intent.amount,
+            "charged_amount": float(charge_amount),
+            "credited_amount": float(credit_amount),
+            "wallet_balance": float(wallet.balance),
             "currency": payment_intent.currency,
-            "customer_email": customer.email,
+            "customer_email": contact_email,
+            "stripe_customer_id": stripe_customer_id,
             "location_id": location_id,
         })
 
     except stripe.error.CardError as e:
-        # Handle declined card, SCA required, etc.
         err = e.json_body.get("error", {})
         return JsonResponse({
             "success": False,
             "message": err.get("message"),
-            "code": err.get("code")
+            "code": err.get("code"),
         }, status=402)
 
     except Exception as e:
+        logger.exception("create_deduction failed")
         return JsonResponse({"success": False, "error": str(e)}, status=500)
