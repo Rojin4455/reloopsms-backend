@@ -26,6 +26,7 @@ TASK_MAX_AGE = {
     "make-api-call-for-agency-every-6-hours": timedelta(hours=11),
     "make-api-call-for-company-every-6-hours": timedelta(hours=11),
     "sync-contact-wallet-custom-fields-every-10-hours": timedelta(hours=11),
+    "sweep-due-auto-recharges-every-5-minutes": timedelta(minutes=15),
     "make-api-call-for-sync_numbers": timedelta(hours=25),
     "sync-client-owned-numbers": timedelta(hours=25),
 }

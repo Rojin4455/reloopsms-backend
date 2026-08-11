@@ -172,6 +172,7 @@ CELERY_TASK_ROUTES = {
     "core.tasks.make_api_call_for_agency_token": {"queue": "critical"},
     "core.tasks.make_api_call_for_company_token": {"queue": "critical"},
     "core.tasks.notify_ghl_auth_failure_task": {"queue": "critical"},
+    "core.tasks.notify_ghl_auto_recharge_event_task": {"queue": "critical"},
     "sms_management_app.tasks.send_outbound_sms_task": {"queue": "outbound"},
 }
 # Lower prefetch helps long-running tasks release the next message sooner (tune per deployment).
@@ -205,6 +206,11 @@ CELERY_BEAT_SCHEDULE = {
     "sync-contact-wallet-custom-fields-every-10-hours": {
         "task": "core.tasks.sync_contact_wallet_custom_fields",
         "schedule": crontab(minute=25, hour="*/10"),
+    },
+
+    "sweep-due-auto-recharges-every-5-minutes": {
+        "task": "core.tasks.sweep_due_auto_recharges_task",
+        "schedule": crontab(minute="*/5"),
     },
 
     # "sync_all_wallets_with_ghl": {
@@ -303,5 +309,22 @@ GHL_AUTH_FAILURE_WEBHOOK_URL = config(
 GHL_AUTH_FAILURE_ALERT_COOLDOWN_SECONDS = config(
     "GHL_AUTH_FAILURE_ALERT_COOLDOWN_SECONDS",
     default=3600,
+    cast=int,
+)
+GHL_AUTO_RECHARGE_WEBHOOK_URL = config(
+    "GHL_AUTO_RECHARGE_WEBHOOK_URL",
+    default=(
+        "https://services.leadconnectorhq.com/hooks/fM52tHdamVZya3QZH3ck/"
+        "webhook-trigger/23977f14-5d92-4aab-a217-38ddb6615f94"
+    ),
+)
+AUTO_RECHARGE_RETRY_DELAY_SECONDS = config(
+    "AUTO_RECHARGE_RETRY_DELAY_SECONDS",
+    default=7200,
+    cast=int,
+)
+AUTO_RECHARGE_COOLDOWN_SECONDS = config(
+    "AUTO_RECHARGE_COOLDOWN_SECONDS",
+    default=86400,
     cast=int,
 )

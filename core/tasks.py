@@ -104,6 +104,72 @@ def notify_ghl_auth_failure_task(self, payload):
     )
     return {"status": "sent", "webhook_status": response.status_code}
 
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=60)
+def notify_ghl_auto_recharge_event_task(self, payload):
+    """POST auto-recharge success/failure events to the GHL inbound webhook."""
+    webhook_url = getattr(settings, "GHL_AUTO_RECHARGE_WEBHOOK_URL", "") or ""
+    if not webhook_url:
+        return {"status": "skipped", "reason": "no webhook url configured"}
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=30,
+        )
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            logger.warning("Retrying GHL auto-recharge webhook after request error: %s", exc)
+            raise self.retry(exc=exc)
+        logger.exception("GHL auto-recharge webhook failed after retries")
+        raise
+
+    if response.status_code >= 400:
+        logger.error(
+            "GHL auto-recharge webhook returned %s for event=%s location_id=%s: %s",
+            response.status_code,
+            payload.get("event"),
+            payload.get("location_id"),
+            response.text[:500],
+        )
+        if self.request.retries < self.max_retries:
+            raise self.retry(countdown=60)
+        return {"status": "failed", "webhook_status": response.status_code}
+
+    logger.info(
+        "Sent GHL auto-recharge event=%s location_id=%s (webhook status=%s)",
+        payload.get("event"),
+        payload.get("location_id"),
+        response.status_code,
+    )
+    return {"status": "sent", "webhook_status": response.status_code}
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=30, soft_time_limit=120, time_limit=180)
+def process_auto_recharge_retry_task(self, recharge_id):
+    """Delayed second attempt for a failed auto-recharge."""
+    from core.auto_recharge import process_auto_recharge_retry
+
+    try:
+        result = process_auto_recharge_retry(str(recharge_id))
+        logger.info("Auto-recharge retry result for %s: %s", recharge_id, result)
+        return result
+    except Exception as exc:
+        logger.exception("Auto-recharge retry task failed for %s", recharge_id)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        raise
+
+
+@shared_task(soft_time_limit=120, time_limit=180)
+def sweep_due_auto_recharges_task():
+    """Beat safety net for overdue pending_retry auto-recharges."""
+    from core.auto_recharge import sweep_due_auto_recharges
+
+    return sweep_due_auto_recharges()
+
 from core.models import Wallet
 from core.service import GHLService
 

@@ -753,20 +753,8 @@ def create_deduction(request):
         "SMS Recharge LocationID": "<location_id>",
         "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee"
       }
-      or
-      {
-        "customData": {
-          "SMS Recharge LocationID": "<location_id>",
-          "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee"
-        }
-      }
 
-    Flow:
-      1. Resolve GHLAuthCredentials by location_id
-      2. If wallet balance > $5, skip (no Stripe charge / no credit)
-      3. Use account.ghl_contact_email → Stripe customer + saved card
-      4. Charge full payment total on Stripe
-      5. Credit wallet with SMS credit only (card fee stripped)
+    On card failure: notifies GHL inbound webhook and schedules one retry (~2h).
     """
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
@@ -775,119 +763,21 @@ def create_deduction(request):
         data = json.loads(request.body)
         print("data:----- ", data)
 
-        params = _extract_create_deduction_params(data)
+        from core.auto_recharge import extract_create_deduction_params, handle_create_deduction_request
+
+        params = extract_create_deduction_params(data)
         location_id = params["location_id"]
         recharge_text = params["recharge_text"]
 
         if not location_id:
             return JsonResponse({"error": "SMS Recharge LocationID is required"}, status=400)
 
-        charge_amount, credit_amount, parse_error = _parse_recharge_charge_and_credit(recharge_text)
-        if parse_error:
-            return JsonResponse({"error": parse_error}, status=400)
-
-        try:
-            account = GHLAuthCredentials.objects.get(location_id=location_id)
-        except GHLAuthCredentials.DoesNotExist:
-            return JsonResponse(
-                {"error": f"GHL account not found for location_id={location_id}"},
-                status=404,
-            )
-
-        wallet, _ = Wallet.objects.get_or_create(account=account)
-        # Skip Stripe charge when wallet already has more than $5.
-        if wallet.balance > Decimal("5.00"):
-            return JsonResponse({
-                "success": True,
-                "skipped": True,
-                "message": "Wallet already has sufficient balance; no Stripe charge performed.",
-                "wallet_balance": float(wallet.balance),
-                "minimum_balance_to_skip": 5.00,
-                "location_id": location_id,
-            })
-
-        contact_email = (account.ghl_contact_email or "").strip()
-        if not contact_email:
-            return JsonResponse(
-                {
-                    "error": (
-                        "GHL Contact Email is not set for this HighLevel account. "
-                        "Set it in Edit HighLevel Account so Stripe can be looked up."
-                    )
-                },
-                status=400,
-            )
-
-        stripe_customer_id = _lookup_latest_stripe_customer_id(contact_email)
-        if not stripe_customer_id:
-            return JsonResponse(
-                {"error": f"No Stripe customer found for email={contact_email}"},
-                status=404,
-            )
-
-        payment_method_id = _lookup_stripe_card_payment_method_id(stripe_customer_id)
-        if not payment_method_id:
-            return JsonResponse(
-                {
-                    "error": (
-                        f"Stripe customer {stripe_customer_id} has no saved card "
-                        f"payment method for email={contact_email}"
-                    )
-                },
-                status=400,
-            )
-
-        # Cache mapping for debugging / optional reuse (does not gate the charge).
-        StripeCustomerData.objects.update_or_create(
-            email=contact_email,
-            defaults={
-                "customer_id": stripe_customer_id,
-                "payment_method_id": payment_method_id,
-                "location_id": location_id,
-            },
+        result = handle_create_deduction_request(
+            location_id=location_id,
+            recharge_text=recharge_text,
         )
-
-        # Charge saved card for full total (credit + fee).
-        payment_intent = stripe.PaymentIntent.create(
-            amount=int(charge_amount * 100),
-            currency="usd",
-            customer=stripe_customer_id,
-            payment_method=payment_method_id,
-            off_session=True,
-            confirm=True,
-            metadata={
-                "location_id": location_id,
-                "ghl_contact_email": contact_email,
-                "credit_amount": str(credit_amount),
-                "charge_amount": str(charge_amount),
-            },
-        )
-
-        wallet.add_funds(credit_amount, reference_id=payment_intent.id)
-        wallet.refresh_from_db()
-
-        return JsonResponse({
-            "success": True,
-            "skipped": False,
-            "message": "Payment completed and wallet credited successfully.",
-            "payment_intent_id": payment_intent.id,
-            "status": payment_intent.status,
-            "charged_amount": float(charge_amount),
-            "credited_amount": float(credit_amount),
-            "wallet_balance": float(wallet.balance),
-            "currency": payment_intent.currency,
-            "customer_email": contact_email,
-            "stripe_customer_id": stripe_customer_id,
-            "location_id": location_id,
-        })
-
-    except stripe.error.CardError as e:
-        err = e.json_body.get("error", {})
-        return JsonResponse({
-            "success": False,
-            "message": err.get("message"),
-            "code": err.get("code"),
-        }, status=402)
+        http_status = result.pop("http_status", 200)
+        return JsonResponse(result, status=http_status)
 
     except Exception as e:
         logger.exception("create_deduction failed")

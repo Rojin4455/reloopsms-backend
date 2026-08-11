@@ -483,3 +483,107 @@ class StripeCustomerData(models.Model):
 
     def __str__(self):
         return f"{self.email} ({self.customer_id})"
+
+
+class WalletAutoRecharge(models.Model):
+    """Tracks automatic Stripe wallet recharges (low-balance) with retry state."""
+
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_PENDING_RETRY = "pending_retry"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_EXHAUSTED = "exhausted"
+    STATUS_REQUIRES_ACTION = "requires_action"
+    STATUS_SKIPPED = "skipped"
+    STATUS_CANCELLED = "cancelled"
+
+    STATUS_CHOICES = (
+        (STATUS_IN_PROGRESS, "In progress"),
+        (STATUS_PENDING_RETRY, "Pending retry"),
+        (STATUS_SUCCEEDED, "Succeeded"),
+        (STATUS_EXHAUSTED, "Exhausted"),
+        (STATUS_REQUIRES_ACTION, "Requires action"),
+        (STATUS_SKIPPED, "Skipped"),
+        (STATUS_CANCELLED, "Cancelled"),
+    )
+
+    FAILURE_RETRYABLE = "retryable"
+    FAILURE_REQUIRES_ACTION = "requires_action"
+    FAILURE_INTERNAL = "internal"
+
+    FAILURE_CATEGORY_CHOICES = (
+        (FAILURE_RETRYABLE, "Retryable"),
+        (FAILURE_REQUIRES_ACTION, "Requires action"),
+        (FAILURE_INTERNAL, "Internal"),
+    )
+
+    ACTIVE_STATUSES = (STATUS_IN_PROGRESS, STATUS_PENDING_RETRY)
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        GHLAuthCredentials,
+        on_delete=models.CASCADE,
+        related_name="auto_recharges",
+    )
+    location_id = models.CharField(max_length=255, db_index=True)
+    status = models.CharField(
+        max_length=32,
+        choices=STATUS_CHOICES,
+        default=STATUS_IN_PROGRESS,
+        db_index=True,
+    )
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=2)
+
+    charge_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    credit_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    recharge_text = models.CharField(max_length=255, blank=True, default="")
+
+    stripe_customer_id = models.CharField(max_length=255, blank=True, null=True)
+    payment_method_id = models.CharField(max_length=255, blank=True, null=True)
+    last_payment_intent_id = models.CharField(max_length=255, blank=True, null=True)
+
+    last_failure_code = models.CharField(max_length=64, blank=True, null=True)
+    last_failure_decline_code = models.CharField(max_length=64, blank=True, null=True)
+    last_failure_message = models.TextField(blank=True, null=True)
+    failure_category = models.CharField(
+        max_length=32,
+        choices=FAILURE_CATEGORY_CHOICES,
+        blank=True,
+        null=True,
+    )
+
+    last_attempt_at = models.DateTimeField(blank=True, null=True)
+    next_retry_at = models.DateTimeField(blank=True, null=True, db_index=True)
+
+    first_failure_notified_at = models.DateTimeField(blank=True, null=True)
+    final_failure_notified_at = models.DateTimeField(blank=True, null=True)
+    success_notified_at = models.DateTimeField(blank=True, null=True)
+
+    ghl_contact_email = models.EmailField(blank=True, null=True)
+    ghl_contact_id = models.CharField(max_length=255, blank=True, null=True)
+
+    skip_reason = models.CharField(max_length=64, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["location_id", "status"]),
+            models.Index(fields=["status", "next_retry_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["location_id"],
+                condition=models.Q(status__in=["in_progress", "pending_retry"]),
+                name="uniq_active_auto_recharge_per_location",
+            )
+        ]
+
+    def __str__(self):
+        return f"AutoRecharge {self.location_id} [{self.status}] attempt={self.attempt_count}"
+
+    @property
+    def is_active(self):
+        return self.status in self.ACTIVE_STATUSES
