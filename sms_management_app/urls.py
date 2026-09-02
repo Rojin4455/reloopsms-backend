@@ -15,6 +15,8 @@ urlpatterns = [
     # TransmitSMS callbacks
     path('transmit-sms/dlr-callback/', transmit_dlr_callback, name='transmit_dlr_callback'),
     path('transmit-sms/reply-callback/<str:message_id>/', transmit_reply_callback, name='transmit_reply_callback'),
+    # Number-level forward_url — inbound messages not attributed to any send
+    path('transmit-sms/inbound-callback/<uuid:account_id>/', transmit_inbound_callback, name='transmit_inbound_callback'),
     
     # Account setup
     path('setup-transmit-account/', SetupTransmitAccountView.as_view(), name='setup_transmit_account'),

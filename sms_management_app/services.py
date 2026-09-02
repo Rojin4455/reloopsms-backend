@@ -637,6 +637,37 @@ class TransmitSMSService:
         
 
 
+    def edit_number_options(self, number, forward_url, api_key=None, api_secret=None):
+        """
+        Set the inbound callback URL on an already-leased number.
+
+        forward_url is the only place TransmitSMS delivers "Inbound SMS" (messages
+        not attributed to an outbound send) — a send's reply_callback never
+        receives them. Numbers leased before this was set need backfilling.
+        API docs: https://api.transmitsms.com/edit-number-options.json
+        """
+        url = f"{self.base_url}/edit-number-options.json"
+        headers = self._get_auth_header(api_key, api_secret)
+        data = {"number": number, "forward_url": forward_url}
+
+        try:
+            response = requests.post(url, data=data, headers=headers, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "error": f"API request failed: {str(e)}"}
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid JSON response: {str(e)}"}
+
+        error = result.get("error") or {}
+        if error.get("code") == "SUCCESS":
+            return {"success": True, "data": result}
+        return {
+            "success": False,
+            "error": error.get("description") or f"Unexpected response: {result}",
+            "data": result,
+        }
+
     def get_number(self, number=None, api_key=None, api_secret=None):
         """
         Retrieve details of a specific virtual number.

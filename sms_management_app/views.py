@@ -11,6 +11,7 @@ from core.models import GHLAuthCredentials, Wallet, WalletTransaction,TransmitNu
 from transmitsms.models import TransmitSMSAccount
 from .serializers import GHLTransmitSMSMappingSerializer, SMSMessageSerializer,DashboardAnalyticsSerializer,RecentMessageSerializer, WalletTransactionSerializer, WalletSerializer, MappingSerializer,TransmitNumberSerializer
 from .tasks import update_ghl_message_status_task, urgent_update_ghl_message_status, process_mms_inbound_message
+from .inbound_routing import build_forward_url
 from django.core.exceptions import ValidationError
 
 from rest_framework.generics import ListAPIView
@@ -362,6 +363,39 @@ def transmit_reply_callback(request, message_id):
     except Exception as e:
         print("❌ Error in reply callback:", str(e))
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+def transmit_inbound_callback(request, account_id):
+    """
+    Number-level inbound webhook from TransmitSMS (the number's `forward_url`).
+
+    Handles "Inbound SMS": messages TransmitSMS could not attribute to an
+    outbound send. Those are never delivered to a send's reply_callback, so
+    without this endpoint they are silently discarded by the provider.
+
+    Payload is the same shape as the reply callback, minus a usable message_id.
+    """
+    if request.method == "GET":
+        data = request.GET.dict()
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            data = request.POST.dict()
+    else:
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    print("📥 Inbound SMS webhook received:", data)
+    WebhookLog.objects.create(
+        webhook_type="transmit_inbound",
+        raw_data={"account_id": str(account_id), **data},
+    )
+
+    from .tasks import process_transmit_inbound_sms
+
+    process_transmit_inbound_sms.delay(data, str(account_id))
+    return JsonResponse({"message": "Inbound SMS received"}, status=200)
 
     
 
@@ -1475,9 +1509,13 @@ class RegisterNumber(APIView):
                 wallet.deduct_funds(price, description=f"Purchase of extra standard number {number}")
 
             # ✅ Register (and simulate purchase) on Transmit
-            purchase_response = service.purchase_number(number)
-
             transmit_account = ghl_account.transmit_sms_mapping.transmit_account
+            # forward_url is the only delivery route for inbound messages that
+            # TransmitSMS does not attribute to an outbound send.
+            purchase_response = service.purchase_number(
+                number, forward_url=build_forward_url(transmit_account.id)
+            )
+
             if not purchase_response.get("success", False):
                 # Refund if wallet was used
                 if use_wallet:
@@ -1732,7 +1770,12 @@ class RegisterPremiumNumber(APIView):
                 wallet.deduct_funds(price, description=f"Purchase of premium number {number}")
 
             # ✅ Purchase number via Transmit API
-            purchase_response = service.purchase_number(number)
+            # forward_url is the only delivery route for inbound messages that
+            # TransmitSMS does not attribute to an outbound send.
+            transmit_account = ghl_account.transmit_sms_mapping.transmit_account
+            purchase_response = service.purchase_number(
+                number, forward_url=build_forward_url(transmit_account.id)
+            )
             if not purchase_response.get("success", False):
                 # Refund if wallet used
                 if use_wallet:

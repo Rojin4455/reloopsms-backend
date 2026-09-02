@@ -351,6 +351,74 @@ def process_sms_message(self, sms_id: str):
 
 
 @shared_task(rate_limit="9/s", bind=True, max_retries=3, default_retry_delay=5)
+def process_transmit_inbound_sms(self, payload: dict, transmit_account_id: str):
+    """
+    Process a TransmitSMS "Inbound SMS" from a number's forward_url webhook.
+
+    These are messages TransmitSMS did not attribute to any outbound send, so
+    unlike replies they never reach the per-message reply_callback and carry no
+    reference to an existing conversation. The contact is resolved by phone.
+    """
+    from transmitsms.models import TransmitSMSAccount
+    from .inbound_routing import InboundResolutionError, resolve_contact_and_conversation
+
+    response_id = str(payload.get("response_id") or "")
+    mobile = payload.get("mobile")
+    message_text = payload.get("response") or ""
+
+    if not mobile:
+        logger.error("Inbound SMS: payload has no 'mobile', cannot resolve contact")
+        return "Inbound SMS: missing mobile"
+
+    try:
+        transmit_account = TransmitSMSAccount.objects.get(id=transmit_account_id)
+        mapping = GHLTransmitSMSMapping.objects.select_related("ghl_account").get(
+            transmit_account=transmit_account
+        )
+        ghl_account = mapping.ghl_account
+
+        # The forward_url and a send's reply_callback can both fire for the same
+        # message if a send ever omits reply_callback.
+        if response_id and SMSMessage.objects.filter(
+            transmit_message_id=response_id, direction="inbound"
+        ).exists():
+            logger.info(f"Inbound SMS {response_id} already recorded, skipping")
+            return f"Inbound SMS {response_id} already recorded"
+
+        contact_id, conversation_id = resolve_contact_and_conversation(ghl_account, mobile)
+
+        sms = SMSMessage.objects.create(
+            ghl_account=ghl_account,
+            transmit_account=transmit_account,
+            message_content=message_text,
+            to_number=payload.get("longcode") or transmit_account.phone_number or "",
+            from_number=mobile,
+            direction="inbound",
+            ghl_conversation_id=conversation_id,
+            ghl_contact_id=contact_id,
+            status="queued",
+            transmit_message_id=response_id or None,
+        )
+
+        # Same pipeline as replies: wallet charge + rate-limited push into GHL.
+        process_sms_message.delay(str(sms.id))
+        return f"Inbound SMS {sms.id} queued for GHL delivery"
+
+    except TransmitSMSAccount.DoesNotExist:
+        logger.error(f"Inbound SMS: no TransmitSMSAccount {transmit_account_id}")
+        return f"Inbound SMS: unknown transmit account {transmit_account_id}"
+    except GHLTransmitSMSMapping.DoesNotExist:
+        logger.error(f"Inbound SMS: transmit account {transmit_account_id} has no GHL mapping")
+        return "Inbound SMS: no GHL mapping"
+    except InboundResolutionError as e:
+        logger.error(f"Inbound SMS: could not resolve GHL contact/conversation: {e}")
+        raise self.retry(exc=e)
+    except Exception as e:
+        logger.exception(f"process_transmit_inbound_sms error: {e}")
+        raise self.retry(exc=e)
+
+
+@shared_task(rate_limit="9/s", bind=True, max_retries=3, default_retry_delay=5)
 def process_mms_inbound_message(self, payload: dict):
     """
     Process inbound MMS from TransmitSMS (MMS_INBOUND event).
@@ -396,9 +464,21 @@ def process_mms_inbound_message(self, payload: dict):
             except SMSMessage.DoesNotExist:
                 pass
 
+        # No last_message means this isn't a reply, so fall back to resolving the
+        # contact by phone rather than dropping the message.
         if not ghl_conversation_id:
-            logger.warning(f"MMS_INBOUND: no conversation found for message_ref={message_ref}, cannot push to GHL")
-            return "MMS_INBOUND: no conversation/contact found, message_ref required for replies"
+            from .inbound_routing import InboundResolutionError, resolve_contact_and_conversation
+
+            if not sender:
+                logger.error("MMS_INBOUND: no last_message and no sender, cannot resolve contact")
+                return "MMS_INBOUND: no conversation and no sender to resolve from"
+            try:
+                ghl_contact_id, ghl_conversation_id = resolve_contact_and_conversation(
+                    ghl_account, sender
+                )
+            except InboundResolutionError as e:
+                logger.error(f"MMS_INBOUND: could not resolve GHL contact/conversation: {e}")
+                raise self.retry(exc=e)
 
         # Create inbound SMSMessage record
         sms = SMSMessage.objects.create(
