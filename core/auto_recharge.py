@@ -107,13 +107,14 @@ def extract_create_deduction_params(data):
         or custom.get("SMS Recharge LocationID")
         or ""
     )
+    # GHL sends the contact field at the top level even when it is blank,
+    # and the workflow value under customData. A blank top-level string
+    # must not hide the customData amount.
     recharge_text = (
         data.get("SMS Credit Recharge")
-        if data.get("SMS Credit Recharge") is not None
-        else custom.get("SMS Credit Recharge")
+        or custom.get("SMS Credit Recharge")
+        or ""
     )
-    if recharge_text is None:
-        recharge_text = ""
 
     return {
         "location_id": str(location_id).strip(),

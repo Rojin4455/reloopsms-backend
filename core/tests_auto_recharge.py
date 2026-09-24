@@ -59,6 +59,21 @@ class ParseAndClassifyTests(TestCase):
             }
         )
         self.assertEqual(params["location_id"], "abc123")
+        self.assertEqual(params["recharge_text"], "$30.00 Credit + $1 Card Fee")
+
+    def test_extract_params_blank_top_level_uses_custom_data(self):
+        params = extract_create_deduction_params(
+            {
+                "SMS Recharge LocationID": "uaTMEOOGUajrDDaLxJWO",
+                "SMS Credit Recharge": "",
+                "customData": {
+                    "SMS Recharge LocationID": "uaTMEOOGUajrDDaLxJWO",
+                    "SMS Credit Recharge": "$30.00 Credit + $1 Card Fee",
+                },
+            }
+        )
+        self.assertEqual(params["location_id"], "uaTMEOOGUajrDDaLxJWO")
+        self.assertEqual(params["recharge_text"], "$30.00 Credit + $1 Card Fee")
 
     def test_classify_failures(self):
         self.assertEqual(
