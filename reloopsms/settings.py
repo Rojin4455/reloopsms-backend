@@ -166,6 +166,8 @@ CELERY_TIMEZONE = 'UTC'
 # Persist beat schedules in Postgres (survives restarts; editable in Django admin).
 # Start beat: celery -A reloopsms beat -l info -S django
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+# DatabaseScheduler polls Postgres every 5s by default; shortest task interval is 15 min.
+CELERY_BEAT_MAX_LOOP_INTERVAL = 60
 
 # Dedicated queue for OAuth refresh so heavy tasks cannot delay token rotation.
 CELERY_TASK_DEFAULT_QUEUE = "celery"
@@ -210,9 +212,12 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute=25, hour="*/10"),
     },
 
+    # Safety net only: retries use a Celery countdown. Stuck in-progress recharges
+    # (15 min cutoff) and lost retries are recovered up to ~1h late.
+    # Name kept as-is (watchdog and seed migration key on it); it now runs hourly at :45.
     "sweep-due-auto-recharges-every-5-minutes": {
         "task": "core.tasks.sweep_due_auto_recharges_task",
-        "schedule": crontab(minute="*/5"),
+        "schedule": crontab(minute=45),
     },
 
     # "sync_all_wallets_with_ghl": {
