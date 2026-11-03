@@ -11,3 +11,5 @@ core/ghl_auth_credentials*.csv
 
 # */migrations/*
 # !*/migrations/__init__.py
+.env.*
+*.csv

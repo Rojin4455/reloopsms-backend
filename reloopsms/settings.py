@@ -105,10 +105,12 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': config("NAME"),
-        'USER': "postgres",
+        # DB_USER (not USER: the OS sets USER, and decouple prefers os.environ).
+        # Supabase's pooler needs "postgres.<project-ref>".
+        'USER': config("DB_USER", default="postgres"),
         'PASSWORD': config("PASSWORD"),
         'HOST': config("HOST"),
-        'PORT': '5432',
+        'PORT': config("DB_PORT", default="5432"),
     }
 }
 
